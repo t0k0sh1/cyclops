@@ -99,6 +99,42 @@ func TestRunRejectsListWithDryRun(t *testing.T) {
 	}
 }
 
+func TestRunPrintsHelpWithoutGremlins(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := Run([]string{"--help"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("Run() exit code = %d, stderr = %q", code, stderr.String())
+	}
+	for _, expected := range []string{"Usage:", "--dry-run", "--help", "--list", "--version"} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Errorf("help output does not contain %q: %q", expected, stdout.String())
+		}
+	}
+}
+
+func TestRunPrintsVersionWithoutGremlins(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := Run([]string{"--version"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("Run() exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if got, want := stdout.String(), "cyclops 0.1.0\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestRunRejectsVersionWithTargets(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := Run([]string{"--version", "example.go"}, strings.NewReader(""), &bytes.Buffer{}, &stderr); code != exitUsage {
+		t.Fatalf("Run() exit code = %d, want %d", code, exitUsage)
+	}
+	if !strings.Contains(stderr.String(), "--version cannot be combined") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestRunTargetsOneGoFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test helper uses a POSIX shell script")

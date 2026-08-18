@@ -18,6 +18,7 @@ import (
 const (
 	exitFailure = 1
 	exitUsage   = 2
+	Version     = "0.1.0"
 )
 
 type targetSelection struct {
@@ -29,6 +30,8 @@ type targetSelection struct {
 type cliOptions struct {
 	list    bool
 	dryRun  bool
+	help    bool
+	version bool
 	targets []string
 }
 
@@ -38,6 +41,14 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "cyclops: %v\n", err)
 		return exitUsage
+	}
+	if options.help {
+		printHelp(stdout)
+		return 0
+	}
+	if options.version {
+		fmt.Fprintf(stdout, "cyclops %s\n", Version)
+		return 0
 	}
 
 	if options.list {
@@ -105,6 +116,14 @@ func parseArgs(args []string) (cliOptions, error) {
 			parsed.dryRun = true
 			continue
 		}
+		if options && arg == "--help" {
+			parsed.help = true
+			continue
+		}
+		if options && arg == "--version" {
+			parsed.version = true
+			continue
+		}
 		if options && strings.HasPrefix(arg, "-") {
 			return cliOptions{}, fmt.Errorf("unknown option: %s", arg)
 		}
@@ -113,7 +132,34 @@ func parseArgs(args []string) (cliOptions, error) {
 	if parsed.list && parsed.dryRun {
 		return cliOptions{}, fmt.Errorf("--list and --dry-run cannot be used together")
 	}
+	if parsed.help && (parsed.version || parsed.list || parsed.dryRun || len(parsed.targets) > 0) {
+		return cliOptions{}, fmt.Errorf("--help cannot be combined with other options or targets")
+	}
+	if parsed.version && (parsed.list || parsed.dryRun || len(parsed.targets) > 0) {
+		return cliOptions{}, fmt.Errorf("--version cannot be combined with other options or targets")
+	}
 	return parsed, nil
+}
+
+func printHelp(stdout io.Writer) {
+	fmt.Fprint(stdout, `Cyclops runs mutation tests with Gremlins.
+
+Usage:
+  cyclops [options] [file-or-glob...]
+
+Options:
+  --dry-run  Analyze mutant candidates without testing them
+  --help     Show this help
+  --list     List the selected source files without running Gremlins
+  --version  Show the Cyclops version
+
+Examples:
+  cyclops
+  cyclops internal/service/user.go
+  cyclops 'internal/**/*.go'
+  cyclops --list 'foo/{bar,bas}/**/*.go'
+  cyclops --dry-run 'internal/**/*.go'
+`)
 }
 
 func printTargets(inputs []string, stdout io.Writer) error {

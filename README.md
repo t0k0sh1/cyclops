@@ -66,3 +66,12 @@ cyclops --dry-run 'foo/{bar,bas}/**/*.go'
 
 Dry-run mode uses Gremlins' `--dry-run` behavior. It cannot be combined with
 `--list`.
+
+Show command help or the Cyclops version without starting Gremlins:
+
+```sh
+cyclops --help
+cyclops --version
+```
+
+The current Cyclops version is `0.1.0`.
