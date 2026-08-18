@@ -54,7 +54,11 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		selection = &resolved
 	}
 
-	gremlinsArgs, err := gremlins.Arguments(selection, options.DryRun)
+	gremlinsArgs, err := gremlins.Arguments(gremlins.Request{
+		Selection: selection,
+		DryRun:    options.DryRun,
+		DiffBase:  options.Diff,
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "cyclops: %v\n", err)
 		return exitUsage

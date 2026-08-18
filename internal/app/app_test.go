@@ -92,6 +92,53 @@ func TestRunStartsGremlinsDryRun(t *testing.T) {
 	}
 }
 
+func TestRunStartsGremlinsDiffDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses a POSIX shell script")
+	}
+
+	binDir := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "args")
+	gremlinsExecutable := filepath.Join(binDir, "gremlins")
+	if err := os.WriteFile(gremlinsExecutable, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CYCLOPS_TEST_ARGS_FILE\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("CYCLOPS_TEST_ARGS_FILE", argsFile)
+
+	var stderr bytes.Buffer
+	if code := Run([]string{"--dry-run", "--diff", "origin/main"}, strings.NewReader(""), &bytes.Buffer{}, &stderr); code != 0 {
+		t.Fatalf("Run() exit code = %d, stderr = %q", code, stderr.String())
+	}
+	gotArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(gotArgs), "unleash\n--diff\norigin/main\n--dry-run\n"; got != want {
+		t.Fatalf("gremlins arguments = %q, want %q", got, want)
+	}
+}
+
+func TestRunRejectsDiffWithoutReference(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := Run([]string{"--diff"}, strings.NewReader(""), &bytes.Buffer{}, &stderr); code != exitUsage {
+		t.Fatalf("Run() exit code = %d, want %d", code, exitUsage)
+	}
+	if !strings.Contains(stderr.String(), "--diff requires a branch or commit") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunRejectsListWithDiff(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := Run([]string{"--list", "--diff", "HEAD"}, strings.NewReader(""), &bytes.Buffer{}, &stderr); code != exitUsage {
+		t.Fatalf("Run() exit code = %d, want %d", code, exitUsage)
+	}
+	if !strings.Contains(stderr.String(), "--list and --diff cannot be used together") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestRunRejectsListWithDryRun(t *testing.T) {
 	var stderr bytes.Buffer
 	if code := Run([]string{"--list", "--dry-run"}, strings.NewReader(""), &bytes.Buffer{}, &stderr); code != exitUsage {
@@ -214,11 +261,11 @@ func TestRunTargetsFilesAcrossPackages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := gremlins.Arguments(&selection, false)
+	got, err := gremlins.Arguments(gremlins.Request{Selection: &selection, DiffBase: "HEAD", DryRun: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"unleash", moduleRoot, "--exclude-files", `^second/excluded\.go$`}
+	want := []string{"unleash", moduleRoot, "--exclude-files", `^second/excluded\.go$`, "--diff", "HEAD", "--dry-run"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("arguments = %q, want %q", got, want)
 	}

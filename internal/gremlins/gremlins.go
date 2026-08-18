@@ -15,8 +15,15 @@ import (
 
 var ErrNotFound = errors.New("gremlins executable not found")
 
-func Arguments(selection *target.Selection, dryRun bool) ([]string, error) {
+type Request struct {
+	Selection *target.Selection
+	DryRun    bool
+	DiffBase  string
+}
+
+func Arguments(request Request) ([]string, error) {
 	args := []string{"unleash"}
+	selection := request.Selection
 	if selection != nil {
 		args = append(args, selection.ScanRoot)
 		err := filepath.WalkDir(selection.ScanRoot, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -44,7 +51,10 @@ func Arguments(selection *target.Selection, dryRun bool) ([]string, error) {
 			return nil, fmt.Errorf("scan target package: %w", err)
 		}
 	}
-	if dryRun {
+	if request.DiffBase != "" {
+		args = append(args, "--diff", request.DiffBase)
+	}
+	if request.DryRun {
 		args = append(args, "--dry-run")
 	}
 	return args, nil

@@ -67,6 +67,18 @@ cyclops --dry-run 'foo/{bar,bas}/**/*.go'
 Dry-run mode uses Gremlins' `--dry-run` behavior. It cannot be combined with
 `--list`.
 
+Limit mutation testing to code changed from a Git branch or commit:
+
+```sh
+cyclops --diff origin/main
+cyclops --dry-run --diff HEAD~1
+cyclops --diff origin/main 'internal/**/*.go'
+```
+
+When targets are also provided, Cyclops applies both filters. Diff mode cannot
+be combined with `--list`. Cyclops delegates Git reference validation and
+changed-line filtering to Gremlins.
+
 Show command help or the Cyclops version without starting Gremlins:
 
 ```sh
