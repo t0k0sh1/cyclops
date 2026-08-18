@@ -26,16 +26,22 @@ type targetSelection struct {
 	scanRoot   string
 }
 
+type cliOptions struct {
+	list    bool
+	dryRun  bool
+	targets []string
+}
+
 // Run executes Gremlins mutation testing and returns the process exit code.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	list, inputs, err := parseArgs(args)
+	options, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "cyclops: %v\n", err)
 		return exitUsage
 	}
 
-	if list {
-		if err := printTargets(inputs, stdout); err != nil {
+	if options.list {
+		if err := printTargets(options.targets, stdout); err != nil {
 			fmt.Fprintf(stderr, "cyclops: %v\n", err)
 			return exitUsage
 		}
@@ -43,8 +49,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	gremlinsArgs := []string{"unleash"}
-	if len(inputs) > 0 {
-		targets, err := expandTargets(inputs)
+	if len(options.targets) > 0 {
+		targets, err := expandTargets(options.targets)
 		if err != nil {
 			fmt.Fprintf(stderr, "cyclops: %v\n", err)
 			return exitUsage
@@ -54,6 +60,9 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "cyclops: %v\n", err)
 			return exitUsage
 		}
+	}
+	if options.dryRun {
+		gremlinsArgs = append(gremlinsArgs, "--dry-run")
 	}
 
 	gremlins, err := exec.LookPath("gremlins")
@@ -80,7 +89,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func parseArgs(args []string) (list bool, targets []string, err error) {
+func parseArgs(args []string) (cliOptions, error) {
+	var parsed cliOptions
 	options := true
 	for _, arg := range args {
 		if options && arg == "--" {
@@ -88,15 +98,22 @@ func parseArgs(args []string) (list bool, targets []string, err error) {
 			continue
 		}
 		if options && arg == "--list" {
-			list = true
+			parsed.list = true
+			continue
+		}
+		if options && arg == "--dry-run" {
+			parsed.dryRun = true
 			continue
 		}
 		if options && strings.HasPrefix(arg, "-") {
-			return false, nil, fmt.Errorf("unknown option: %s", arg)
+			return cliOptions{}, fmt.Errorf("unknown option: %s", arg)
 		}
-		targets = append(targets, arg)
+		parsed.targets = append(parsed.targets, arg)
 	}
-	return list, targets, nil
+	if parsed.list && parsed.dryRun {
+		return cliOptions{}, fmt.Errorf("--list and --dry-run cannot be used together")
+	}
+	return parsed, nil
 }
 
 func printTargets(inputs []string, stdout io.Writer) error {

@@ -62,6 +62,43 @@ func TestRunReturnsGremlinsExitCode(t *testing.T) {
 	}
 }
 
+func TestRunStartsGremlinsDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses a POSIX shell script")
+	}
+
+	binDir := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "args")
+	gremlins := filepath.Join(binDir, "gremlins")
+	if err := os.WriteFile(gremlins, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CYCLOPS_TEST_ARGS_FILE\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("CYCLOPS_TEST_ARGS_FILE", argsFile)
+
+	var stderr bytes.Buffer
+	if code := Run([]string{"--dry-run"}, strings.NewReader(""), &bytes.Buffer{}, &stderr); code != 0 {
+		t.Fatalf("Run() exit code = %d, stderr = %q", code, stderr.String())
+	}
+	gotArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(gotArgs), "unleash\n--dry-run\n"; got != want {
+		t.Fatalf("gremlins arguments = %q, want %q", got, want)
+	}
+}
+
+func TestRunRejectsListWithDryRun(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := Run([]string{"--list", "--dry-run"}, strings.NewReader(""), &bytes.Buffer{}, &stderr); code != exitUsage {
+		t.Fatalf("Run() exit code = %d, want %d", code, exitUsage)
+	}
+	if !strings.Contains(stderr.String(), "--list and --dry-run cannot be used together") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestRunTargetsOneGoFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test helper uses a POSIX shell script")

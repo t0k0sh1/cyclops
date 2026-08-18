@@ -56,3 +56,13 @@ cyclops --list 'foo/{bar,bas}/**/*.go'
 
 With no file or pattern arguments, `--list` prints every Go source file under
 the current directory that Cyclops would consider for mutation.
+
+Analyze and print mutant candidates without running tests against each mutant:
+
+```sh
+cyclops --dry-run
+cyclops --dry-run 'foo/{bar,bas}/**/*.go'
+```
+
+Dry-run mode uses Gremlins' `--dry-run` behavior. It cannot be combined with
+`--list`.
