@@ -46,3 +46,13 @@ behavior to the shell. Patterns support `*`, `**`, `?`, character classes such
 as `[a-z]`, and alternatives such as `{bar,bas}`. Test files matched by a
 pattern are ignored; directly passing a test file remains an error. A pattern
 that matches no Go source files is an error.
+
+Preview the final mutation targets without starting Gremlins:
+
+```sh
+cyclops --list
+cyclops --list 'foo/{bar,bas}/**/*.go'
+```
+
+With no file or pattern arguments, `--list` prints every Go source file under
+the current directory that Cyclops would consider for mutation.

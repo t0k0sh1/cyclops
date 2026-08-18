@@ -20,11 +20,31 @@ const (
 	exitUsage   = 2
 )
 
+type targetSelection struct {
+	targets    map[string]struct{}
+	moduleRoot string
+	scanRoot   string
+}
+
 // Run executes Gremlins mutation testing and returns the process exit code.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	list, inputs, err := parseArgs(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "cyclops: %v\n", err)
+		return exitUsage
+	}
+
+	if list {
+		if err := printTargets(inputs, stdout); err != nil {
+			fmt.Fprintf(stderr, "cyclops: %v\n", err)
+			return exitUsage
+		}
+		return 0
+	}
+
 	gremlinsArgs := []string{"unleash"}
-	if len(args) > 0 {
-		targets, err := expandTargets(args)
+	if len(inputs) > 0 {
+		targets, err := expandTargets(inputs)
 		if err != nil {
 			fmt.Fprintf(stderr, "cyclops: %v\n", err)
 			return exitUsage
@@ -58,6 +78,87 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	return 0
+}
+
+func parseArgs(args []string) (list bool, targets []string, err error) {
+	options := true
+	for _, arg := range args {
+		if options && arg == "--" {
+			options = false
+			continue
+		}
+		if options && arg == "--list" {
+			list = true
+			continue
+		}
+		if options && strings.HasPrefix(arg, "-") {
+			return false, nil, fmt.Errorf("unknown option: %s", arg)
+		}
+		targets = append(targets, arg)
+	}
+	return list, targets, nil
+}
+
+func printTargets(inputs []string, stdout io.Writer) error {
+	var targets []string
+	if len(inputs) == 0 {
+		var err error
+		targets, err = targetsBelowCurrentDirectory()
+		if err != nil {
+			return err
+		}
+	} else {
+		var err error
+		targets, err = expandTargets(inputs)
+		if err != nil {
+			return err
+		}
+		selection, err := resolveTargets(targets)
+		if err != nil {
+			return err
+		}
+		targets = targetsFromSelection(selection)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get current directory: %w", err)
+	}
+	for _, target := range targets {
+		rel, err := filepath.Rel(cwd, target)
+		if err != nil {
+			return fmt.Errorf("make target path relative: %w", err)
+		}
+		fmt.Fprintln(stdout, filepath.ToSlash(rel))
+	}
+	return nil
+}
+
+func targetsBelowCurrentDirectory() ([]string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("get current directory: %w", err)
+	}
+	if _, err := findModuleRoot(cwd); err != nil {
+		return nil, err
+	}
+
+	var targets []string
+	err = filepath.WalkDir(cwd, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		targets = append(targets, path)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan current directory: %w", err)
+	}
+	sort.Strings(targets)
+	return targets, nil
 }
 
 func expandTargets(inputs []string) ([]string, error) {
@@ -105,32 +206,13 @@ func hasGlobMeta(path string) bool {
 }
 
 func fileMutationArgs(targets []string) ([]string, error) {
-	selected := make(map[string]struct{}, len(targets))
-	var moduleRoot string
-	var scanRoot string
-
-	for _, target := range targets {
-		absoluteTarget, root, err := validateTarget(target)
-		if err != nil {
-			return nil, err
-		}
-		if moduleRoot == "" {
-			moduleRoot = root
-		} else if root != moduleRoot {
-			return nil, fmt.Errorf("targets belong to different Go modules: %s and %s", moduleRoot, root)
-		}
-
-		selected[absoluteTarget] = struct{}{}
-		if scanRoot == "" {
-			scanRoot = filepath.Dir(absoluteTarget)
-		} else {
-			scanRoot = commonDirectory(scanRoot, filepath.Dir(absoluteTarget))
-		}
+	selection, err := resolveTargets(targets)
+	if err != nil {
+		return nil, err
 	}
+	gremlinsArgs := []string{"unleash", selection.scanRoot}
 
-	gremlinsArgs := []string{"unleash", scanRoot}
-
-	err := filepath.WalkDir(scanRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(selection.scanRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -142,11 +224,11 @@ func fileMutationArgs(targets []string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		if _, ok := selected[absolutePath]; ok {
+		if _, ok := selection.targets[absolutePath]; ok {
 			return nil
 		}
 
-		rel, err := filepath.Rel(scanRoot, path)
+		rel, err := filepath.Rel(selection.scanRoot, path)
 		if err != nil {
 			return err
 		}
@@ -159,6 +241,38 @@ func fileMutationArgs(targets []string) ([]string, error) {
 	}
 
 	return gremlinsArgs, nil
+}
+
+func resolveTargets(targets []string) (targetSelection, error) {
+	selection := targetSelection{targets: make(map[string]struct{}, len(targets))}
+	for _, target := range targets {
+		absoluteTarget, root, err := validateTarget(target)
+		if err != nil {
+			return targetSelection{}, err
+		}
+		if selection.moduleRoot == "" {
+			selection.moduleRoot = root
+		} else if root != selection.moduleRoot {
+			return targetSelection{}, fmt.Errorf("targets belong to different Go modules: %s and %s", selection.moduleRoot, root)
+		}
+
+		selection.targets[absoluteTarget] = struct{}{}
+		if selection.scanRoot == "" {
+			selection.scanRoot = filepath.Dir(absoluteTarget)
+		} else {
+			selection.scanRoot = commonDirectory(selection.scanRoot, filepath.Dir(absoluteTarget))
+		}
+	}
+	return selection, nil
+}
+
+func targetsFromSelection(selection targetSelection) []string {
+	targets := make([]string, 0, len(selection.targets))
+	for target := range selection.targets {
+		targets = append(targets, target)
+	}
+	sort.Strings(targets)
+	return targets
 }
 
 func validateTarget(target string) (absoluteTarget, moduleRoot string, err error) {

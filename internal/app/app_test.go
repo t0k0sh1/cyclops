@@ -185,6 +185,54 @@ func TestExpandTargetsRejectsPatternWithoutGoSourceFiles(t *testing.T) {
 	}
 }
 
+func TestRunListsExpandedTargetsWithoutGremlins(t *testing.T) {
+	moduleRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleRoot, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.go", "b.go", "b_test.go"} {
+		if err := os.WriteFile(filepath.Join(moduleRoot, name), []byte("package example\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdirForTest(t, moduleRoot)
+	t.Setenv("PATH", t.TempDir())
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := Run([]string{"--list", "*.go"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("Run() exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if got, want := stdout.String(), "a.go\nb.go\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestRunListsAllTargetsFromCurrentDirectory(t *testing.T) {
+	moduleRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleRoot, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(moduleRoot, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"root.go", filepath.Join("nested", "nested.go")} {
+		if err := os.WriteFile(filepath.Join(moduleRoot, name), []byte("package example\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdirForTest(t, moduleRoot)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := Run([]string{"--list"}, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("Run() exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if got, want := stdout.String(), "nested/nested.go\nroot.go\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
 func TestRunRejectsTestFile(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "example_test.go")
 	if err := os.WriteFile(target, []byte("package example\n"), 0o644); err != nil {
@@ -198,4 +246,20 @@ func TestRunRejectsTestFile(t *testing.T) {
 	if !strings.Contains(stderr.String(), "test files cannot be mutation targets") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
+}
+
+func chdirForTest(t *testing.T, dir string) {
+	t.Helper()
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(original); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
 }
