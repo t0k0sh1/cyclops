@@ -15,6 +15,8 @@ import (
 
 var ErrNotFound = errors.New("gremlins executable not found")
 
+const maxExcludePatternBytes = 32 * 1024
+
 type Request struct {
 	Selection *target.Selection
 	DryRun    bool
@@ -26,6 +28,7 @@ func Arguments(request Request) ([]string, error) {
 	selection := request.Selection
 	if selection != nil {
 		args = append(args, selection.ScanRoot)
+		var excluded []string
 		err := filepath.WalkDir(selection.ScanRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
@@ -44,11 +47,14 @@ func Arguments(request Request) ([]string, error) {
 			if err != nil {
 				return err
 			}
-			args = append(args, "--exclude-files", "^"+regexp.QuoteMeta(filepath.ToSlash(rel))+"$")
+			excluded = append(excluded, regexp.QuoteMeta(filepath.ToSlash(rel)))
 			return nil
 		})
 		if err != nil {
 			return nil, fmt.Errorf("scan target package: %w", err)
+		}
+		for _, pattern := range buildExcludePatterns(excluded) {
+			args = append(args, "--exclude-files", pattern)
 		}
 	}
 	if request.DiffBase != "" {
@@ -58,6 +64,37 @@ func Arguments(request Request) ([]string, error) {
 		args = append(args, "--dry-run")
 	}
 	return args, nil
+}
+
+func buildExcludePatterns(paths []string) []string {
+	const framingBytes = len("^()$")
+	var patterns []string
+	var chunk []string
+	chunkBytes := framingBytes
+
+	flush := func() {
+		if len(chunk) == 0 {
+			return
+		}
+		patterns = append(patterns, "^("+strings.Join(chunk, "|")+")$")
+		chunk = nil
+		chunkBytes = framingBytes
+	}
+
+	for _, path := range paths {
+		additionalBytes := len(path)
+		if len(chunk) > 0 {
+			additionalBytes++ // Alternation separator.
+		}
+		if len(chunk) > 0 && chunkBytes+additionalBytes > maxExcludePatternBytes {
+			flush()
+			additionalBytes = len(path)
+		}
+		chunk = append(chunk, path)
+		chunkBytes += additionalBytes
+	}
+	flush()
+	return patterns
 }
 
 func Execute(args []string, stdin io.Reader, stdout, stderr io.Writer) error {

@@ -227,9 +227,7 @@ func TestRunTargetsOneGoFile(t *testing.T) {
 		"unleash",
 		packageDir,
 		"--exclude-files",
-		`^nested/nested\.go$`,
-		"--exclude-files",
-		`^other\.go$`,
+		`^(nested/nested\.go|other\.go)$`,
 	}, "\n") + "\n"
 	if got := string(gotArgs); got != want {
 		t.Fatalf("gremlins arguments = %q, want %q", got, want)
@@ -265,7 +263,7 @@ func TestRunTargetsFilesAcrossPackages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"unleash", moduleRoot, "--exclude-files", `^second/excluded\.go$`, "--diff", "HEAD", "--dry-run"}
+	want := []string{"unleash", moduleRoot, "--exclude-files", `^(second/excluded\.go)$`, "--diff", "HEAD", "--dry-run"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("arguments = %q, want %q", got, want)
 	}
