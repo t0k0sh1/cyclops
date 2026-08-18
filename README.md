@@ -87,3 +87,22 @@ cyclops --version
 ```
 
 The current Cyclops version is `0.1.0`.
+
+## Test
+
+Run the unit tests and static checks:
+
+```sh
+go test ./...
+go vet ./...
+```
+
+Run the Git-diff end-to-end test with a real Gremlins executable in `PATH`:
+
+```sh
+go test -tags=e2e ./internal/e2e
+```
+
+The end-to-end test creates an isolated temporary Git repository and verifies
+that Gremlins selects a mutant on a changed line. It does not modify the
+Cyclops working tree.
