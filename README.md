@@ -32,9 +32,17 @@ To mutate selected source files, pass their paths as positional arguments:
 ```sh
 cyclops internal/service/user.go
 cyclops internal/service/user.go internal/service/order.go
+cyclops 'internal/**/*.go'
+cyclops 'foo/{bar,bas}/*.go'
 ```
 
 Cyclops runs the relevant package tree while excluding all unselected source
 files from mutation. All selected files must belong to the same Go module.
 Duplicate paths are ignored. Test files (`*_test.go`) cannot be mutation
 targets.
+
+Quote patterns to make Cyclops expand them consistently instead of leaving the
+behavior to the shell. Patterns support `*`, `**`, `?`, character classes such
+as `[a-z]`, and alternatives such as `{bar,bas}`. Test files matched by a
+pattern are ignored; directly passing a test file remains an error. A pattern
+that matches no Go source files is an error.

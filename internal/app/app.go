@@ -9,7 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 const (
@@ -21,8 +24,12 @@ const (
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	gremlinsArgs := []string{"unleash"}
 	if len(args) > 0 {
-		var err error
-		gremlinsArgs, err = fileMutationArgs(args)
+		targets, err := expandTargets(args)
+		if err != nil {
+			fmt.Fprintf(stderr, "cyclops: %v\n", err)
+			return exitUsage
+		}
+		gremlinsArgs, err = fileMutationArgs(targets)
 		if err != nil {
 			fmt.Fprintf(stderr, "cyclops: %v\n", err)
 			return exitUsage
@@ -51,6 +58,50 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	return 0
+}
+
+func expandTargets(inputs []string) ([]string, error) {
+	targets := make(map[string]struct{})
+	for _, input := range inputs {
+		if _, err := os.Stat(input); err == nil || !hasGlobMeta(input) {
+			targets[input] = struct{}{}
+			continue
+		}
+
+		matches, err := doublestar.FilepathGlob(
+			input,
+			doublestar.WithFilesOnly(),
+			doublestar.WithNoFollow(),
+			doublestar.WithNoHidden(),
+			doublestar.WithFailOnIOErrors(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("invalid pattern %q: %w", input, err)
+		}
+
+		matchedTargets := 0
+		for _, match := range matches {
+			if filepath.Ext(match) != ".go" || strings.HasSuffix(match, "_test.go") {
+				continue
+			}
+			targets[match] = struct{}{}
+			matchedTargets++
+		}
+		if matchedTargets == 0 {
+			return nil, fmt.Errorf("pattern %q matched no Go source files", input)
+		}
+	}
+
+	expanded := make([]string, 0, len(targets))
+	for target := range targets {
+		expanded = append(expanded, target)
+	}
+	sort.Strings(expanded)
+	return expanded, nil
+}
+
+func hasGlobMeta(path string) bool {
+	return strings.ContainsAny(path, "*?[{")
 }
 
 func fileMutationArgs(targets []string) ([]string, error) {

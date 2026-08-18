@@ -144,6 +144,47 @@ func TestRunTargetsFilesAcrossPackages(t *testing.T) {
 	}
 }
 
+func TestExpandTargetsSupportsBracesAndGlobstar(t *testing.T) {
+	root := t.TempDir()
+	files := []string{
+		filepath.Join(root, "foo", "bar", "bar.go"),
+		filepath.Join(root, "foo", "bas", "bas.go"),
+		filepath.Join(root, "foo", "bas", "nested", "nested.go"),
+		filepath.Join(root, "foo", "bas", "nested", "nested_test.go"),
+	}
+	for _, file := range files {
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte("package example\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pattern := filepath.Join(root, "foo", "{bar,bas}", "**", "*.go")
+	got, err := expandTargets([]string{pattern, files[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{files[0], files[1], files[2]}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("targets = %q, want %q", got, want)
+	}
+}
+
+func TestExpandTargetsRejectsPatternWithoutGoSourceFiles(t *testing.T) {
+	root := t.TempDir()
+	testFile := filepath.Join(root, "example_test.go")
+	if err := os.WriteFile(testFile, []byte("package example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := expandTargets([]string{filepath.Join(root, "*.go")})
+	if err == nil || !strings.Contains(err.Error(), "matched no Go source files") {
+		t.Fatalf("expandTargets() error = %v", err)
+	}
+}
+
 func TestRunRejectsTestFile(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "example_test.go")
 	if err := os.WriteFile(target, []byte("package example\n"), 0o644); err != nil {
