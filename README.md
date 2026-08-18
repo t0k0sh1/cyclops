@@ -1,73 +1,114 @@
 # cyclops
 
-`cyclops` is a small wrapper for mutation testing tools. The first supported
-backend is [Gremlins](https://gremlins.dev/).
+Cyclops is a Go mutation-testing wrapper that focuses
+[Gremlins](https://gremlins.dev/) on selected files, glob patterns, or Git
+changes.
 
-## Install prerequisites
+Cyclops accepts files to include and translates that selection into the
+exclusion rules required by Gremlins.
+
+## Requirements
+
+- Go 1.23 or later
+- Git, when using `--diff`
+- Gremlins available in `PATH`
+
+Install Gremlins:
 
 ```sh
 go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
 ```
 
-## Run
+## Installation
 
-Build and install Cyclops:
+Install the latest version:
 
 ```sh
+go install github.com/t0k0sh1/cyclops/cmd/cyclops@latest
+```
+
+To install from a local checkout instead:
+
+```sh
+cd /path/to/cyclops
 go install ./cmd/cyclops
 ```
 
-Then run `cyclops` at the root of a Go module:
+Ensure Go's binary directory is in `PATH` if the command cannot be found:
 
 ```sh
+export PATH="$(go env GOPATH)/bin:$PATH"
+```
+
+Verify the installation:
+
+```sh
+cyclops --version
+```
+
+## Usage
+
+Run Cyclops from a Go module. With no arguments, it performs a full Gremlins
+mutation test:
+
+```sh
+cd /path/to/go-module
 cyclops
 ```
 
-With no arguments, Cyclops runs `gremlins unleash`, which performs Gremlins'
-normal full mutation test. Cyclops forwards standard input, output, error, and
-the Gremlins exit code.
+### Select files
 
-To mutate selected source files, pass their paths as positional arguments:
+Pass one or more Go source files to mutate only those files:
 
 ```sh
 cyclops internal/service/user.go
 cyclops internal/service/user.go internal/service/order.go
-cyclops 'internal/**/*.go'
-cyclops 'foo/{bar,bas}/*.go'
 ```
 
-Cyclops runs the relevant package tree while excluding all unselected source
-files from mutation. All selected files must belong to the same Go module.
-Duplicate paths are ignored. Test files (`*_test.go`) cannot be mutation
-targets.
+All selected files must belong to the same Go module. Duplicate paths are
+ignored. A directly specified `*_test.go` file is rejected.
 
-Quote patterns to make Cyclops expand them consistently instead of leaving the
-behavior to the shell. Patterns support `*`, `**`, `?`, character classes such
-as `[a-z]`, and alternatives such as `{bar,bas}`. Test files matched by a
-pattern are ignored; directly passing a test file remains an error. A pattern
-that matches no Go source files is an error.
+### Select files with patterns
 
-Preview the final mutation targets without starting Gremlins:
+Quote patterns so Cyclops expands them consistently instead of the shell:
+
+```sh
+cyclops 'internal/**/*.go'
+cyclops 'foo/{bar,bas}/*.go'
+cyclops 'internal/**/service_?.go'
+cyclops 'pkg/[a-z]*.go'
+```
+
+Patterns support `*`, `**`, `?`, character classes such as `[a-z]`, and
+alternatives such as `{bar,bas}`. Test files matched by a pattern are ignored.
+A pattern that matches no Go source files is an error.
+
+### List selected files
+
+Show the final source-file selection without starting Gremlins:
 
 ```sh
 cyclops --list
 cyclops --list 'foo/{bar,bas}/**/*.go'
 ```
 
-With no file or pattern arguments, `--list` prints every Go source file under
-the current directory that Cyclops would consider for mutation.
+Without file or pattern arguments, `--list` shows all Go source files below the
+current directory that Cyclops considers for mutation.
 
-Analyze and print mutant candidates without running tests against each mutant:
+### Preview mutants
+
+Analyze mutant candidates without running tests against each mutant:
 
 ```sh
 cyclops --dry-run
-cyclops --dry-run 'foo/{bar,bas}/**/*.go'
+cyclops --dry-run 'internal/**/*.go'
 ```
 
-Dry-run mode uses Gremlins' `--dry-run` behavior. It cannot be combined with
-`--list`.
+`--dry-run` cannot be combined with `--list`.
 
-Limit mutation testing to code changed from a Git branch or commit:
+### Test Git changes
+
+Limit mutation testing to lines changed from a branch or commit:
 
 ```sh
 cyclops --diff origin/main
@@ -75,34 +116,20 @@ cyclops --dry-run --diff HEAD~1
 cyclops --diff origin/main 'internal/**/*.go'
 ```
 
-When targets are also provided, Cyclops applies both filters. Diff mode cannot
-be combined with `--list`. Cyclops delegates Git reference validation and
-changed-line filtering to Gremlins.
+When files or patterns are also provided, Cyclops applies both filters.
+`--diff` cannot be combined with `--list`.
 
-Show command help or the Cyclops version without starting Gremlins:
+Gremlins 0.6.0 treats an empty Git diff as an unfiltered run. Check that the
+requested diff is non-empty before running Cyclops if an unexpected full run
+would be costly.
+
+### Help and version
 
 ```sh
 cyclops --help
 cyclops --version
 ```
 
-The current Cyclops version is `0.1.0`.
+## License
 
-## Test
-
-Run the unit tests and static checks:
-
-```sh
-go test ./...
-go vet ./...
-```
-
-Run the Git-diff end-to-end test with a real Gremlins executable in `PATH`:
-
-```sh
-go test -tags=e2e ./internal/e2e
-```
-
-The end-to-end test creates an isolated temporary Git repository and verifies
-that Gremlins selects a mutant on a changed line. It does not modify the
-Cyclops working tree.
+Cyclops is available under the [MIT License](LICENSE).
