@@ -7,6 +7,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/t0k0sh1/cyclops/internal/gremlins"
+	"github.com/t0k0sh1/cyclops/internal/target"
 )
 
 func TestRunStartsFullGremlinsMutationTest(t *testing.T) {
@@ -207,7 +210,11 @@ func TestRunTargetsFilesAcrossPackages(t *testing.T) {
 		}
 	}
 
-	got, err := fileMutationArgs([]string{first, second, first})
+	selection, err := target.Resolve([]string{first, second, first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := gremlins.Arguments(&selection, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +242,7 @@ func TestExpandTargetsSupportsBracesAndGlobstar(t *testing.T) {
 	}
 
 	pattern := filepath.Join(root, "foo", "{bar,bas}", "**", "*.go")
-	got, err := expandTargets([]string{pattern, files[0]})
+	got, err := target.Expand([]string{pattern, files[0]})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,9 +259,9 @@ func TestExpandTargetsRejectsPatternWithoutGoSourceFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := expandTargets([]string{filepath.Join(root, "*.go")})
+	_, err := target.Expand([]string{filepath.Join(root, "*.go")})
 	if err == nil || !strings.Contains(err.Error(), "matched no Go source files") {
-		t.Fatalf("expandTargets() error = %v", err)
+		t.Fatalf("target.Expand() error = %v", err)
 	}
 }
 
