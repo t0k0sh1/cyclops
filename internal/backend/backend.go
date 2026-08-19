@@ -4,10 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
-
-	"github.com/t0k0sh1/cyclops/internal/gremlins"
-	"github.com/t0k0sh1/cyclops/internal/target"
 )
 
 const (
@@ -16,14 +12,16 @@ const (
 )
 
 type Capabilities struct {
-	Diff   bool
-	DryRun bool
+	Diff        bool
+	DryRun      bool
+	ListTargets bool
 }
 
 type Request struct {
 	Targets  []string
 	DryRun   bool
 	DiffBase string
+	List     bool
 	Stdin    io.Reader
 	Stdout   io.Writer
 	Stderr   io.Writer
@@ -61,6 +59,9 @@ func Execute(selected Backend, request Request) error {
 	if request.DryRun && !capabilities.DryRun {
 		return unsupported(selected.ID(), "--dry-run")
 	}
+	if request.List && !capabilities.ListTargets {
+		return unsupported(selected.ID(), "--list")
+	}
 	return selected.Run(request)
 }
 
@@ -71,61 +72,6 @@ func unsupported(id, option string) error {
 
 func Default() Backend { return Gremlins{} }
 
-type Gremlins struct{}
-
-func (Gremlins) ID() string { return "gremlins" }
-
-func (Gremlins) Capabilities() Capabilities {
-	return Capabilities{Diff: true, DryRun: true}
-}
-
-func (Gremlins) Run(request Request) error {
-	var selection *target.Selection
-	if len(request.Targets) > 0 {
-		expanded, err := target.Expand(request.Targets)
-		if err != nil {
-			return usageDiagnostic(err)
-		}
-		resolved, err := target.Resolve(expanded)
-		if err != nil {
-			return usageDiagnostic(err)
-		}
-		selection = &resolved
-	}
-
-	args, err := gremlins.Arguments(gremlins.Request{
-		Selection: selection,
-		DryRun:    request.DryRun,
-		DiffBase:  request.DiffBase,
-	})
-	if err != nil {
-		return usageDiagnostic(err)
-	}
-	err = gremlins.Execute(args, request.Stdin, request.Stdout, request.Stderr)
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, gremlins.ErrNotFound) {
-		return &Diagnostic{
-			ExitCode: ExitFailure,
-			Lines: []string{
-				"cyclops: gremlins was not found in PATH",
-				"install it with: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest",
-			},
-			Err: err,
-		}
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return err
-	}
-	return &Diagnostic{
-		ExitCode: ExitFailure,
-		Lines:    []string{fmt.Sprintf("cyclops: failed to run gremlins: %v", err)},
-		Err:      err,
-	}
-}
-
 func usageDiagnostic(err error) error {
 	return &Diagnostic{
 		ExitCode: ExitUsage,
@@ -133,3 +79,13 @@ func usageDiagnostic(err error) error {
 		Err:      err,
 	}
 }
+
+type ProcessExit struct {
+	BackendID string
+	Code      int
+	Meaning   string
+	Err       error
+}
+
+func (e *ProcessExit) Error() string { return e.Err.Error() }
+func (e *ProcessExit) Unwrap() error { return e.Err }

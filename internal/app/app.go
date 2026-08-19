@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"path/filepath"
 
 	"github.com/t0k0sh1/cyclops/internal/backend"
 	"github.com/t0k0sh1/cyclops/internal/cli"
-	"github.com/t0k0sh1/cyclops/internal/target"
 )
 
 const (
@@ -31,19 +29,24 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "cyclops %s\n", cli.Version)
 		return 0
 	}
-	if options.List {
-		if err := printTargets(options.Targets, stdout); err != nil {
-			fmt.Fprintf(stderr, "cyclops: %v\n", err)
-			return exitUsage
+	selected, err := backend.Select(".")
+	if err != nil {
+		var diagnostic *backend.Diagnostic
+		if errors.As(err, &diagnostic) {
+			for _, line := range diagnostic.Lines {
+				fmt.Fprintln(stderr, line)
+			}
+			return diagnostic.ExitCode
 		}
-		return 0
+		fmt.Fprintf(stderr, "cyclops: select backend: %v\n", err)
+		return exitFailure
 	}
 
-	selected := backend.Default()
 	err = backend.Execute(selected, backend.Request{
 		Targets:  options.Targets,
 		DryRun:   options.DryRun,
 		DiffBase: options.Diff,
+		List:     options.List,
 		Stdin:    stdin,
 		Stdout:   stdout,
 		Stderr:   stderr,
@@ -58,44 +61,14 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return diagnostic.ExitCode
 	}
+	var processExit *backend.ProcessExit
+	if errors.As(err, &processExit) {
+		return processExit.Code
+	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		return exitErr.ExitCode()
 	}
 	fmt.Fprintf(stderr, "cyclops: backend %q failed: %v\n", selected.ID(), err)
 	return exitFailure
-}
-
-func printTargets(inputs []string, stdout io.Writer) error {
-	var paths []string
-	if len(inputs) == 0 {
-		var err error
-		paths, err = target.BelowCurrentDirectory()
-		if err != nil {
-			return err
-		}
-	} else {
-		expanded, err := target.Expand(inputs)
-		if err != nil {
-			return err
-		}
-		selection, err := target.Resolve(expanded)
-		if err != nil {
-			return err
-		}
-		paths = selection.Paths()
-	}
-
-	cwd, err := filepath.Abs(".")
-	if err != nil {
-		return fmt.Errorf("get current directory: %w", err)
-	}
-	for _, path := range paths {
-		rel, err := filepath.Rel(cwd, path)
-		if err != nil {
-			return fmt.Errorf("make target path relative: %w", err)
-		}
-		fmt.Fprintln(stdout, filepath.ToSlash(rel))
-	}
-	return nil
 }

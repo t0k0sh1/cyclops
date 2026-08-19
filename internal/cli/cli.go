@@ -84,7 +84,7 @@ func Parse(args []string) (Options, error) {
 }
 
 func PrintHelp(stdout io.Writer) {
-	fmt.Fprint(stdout, `Cyclops runs mutation tests with Gremlins.
+	fmt.Fprint(stdout, `Cyclops runs mutation tests with the backend detected for the current project.
 
 Usage:
   cyclops [options] [file-or-glob...]
