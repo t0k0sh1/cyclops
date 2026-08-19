@@ -7,6 +7,17 @@ changes.
 Cyclops accepts files to include and translates that selection into the
 exclusion rules required by Gremlins.
 
+## Backend architecture
+
+Gremlins is currently Cyclops' only and default mutation-testing backend. Its
+executable discovery, capabilities, target preparation, command construction,
+execution, and diagnostics are isolated behind an internal backend boundary.
+This is the first implementation stage of [the extensible backend work](https://github.com/t0k0sh1/cyclops/issues/2).
+
+Backend selection, project-language detection, normalized mutation results,
+and additional mutation engines are intentionally deferred until a second
+backend is selected to validate the abstraction.
+
 ## Requirements
 
 - Go 1.23 or later

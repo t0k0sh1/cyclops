@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/t0k0sh1/cyclops/internal/backend"
 	"github.com/t0k0sh1/cyclops/internal/cli"
-	"github.com/t0k0sh1/cyclops/internal/gremlins"
 	"github.com/t0k0sh1/cyclops/internal/target"
 )
 
@@ -39,44 +39,30 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	var selection *target.Selection
-	if len(options.Targets) > 0 {
-		expanded, err := target.Expand(options.Targets)
-		if err != nil {
-			fmt.Fprintf(stderr, "cyclops: %v\n", err)
-			return exitUsage
-		}
-		resolved, err := target.Resolve(expanded)
-		if err != nil {
-			fmt.Fprintf(stderr, "cyclops: %v\n", err)
-			return exitUsage
-		}
-		selection = &resolved
-	}
-
-	gremlinsArgs, err := gremlins.Arguments(gremlins.Request{
-		Selection: selection,
-		DryRun:    options.DryRun,
-		DiffBase:  options.Diff,
+	selected := backend.Default()
+	err = backend.Execute(selected, backend.Request{
+		Targets:  options.Targets,
+		DryRun:   options.DryRun,
+		DiffBase: options.Diff,
+		Stdin:    stdin,
+		Stdout:   stdout,
+		Stderr:   stderr,
 	})
-	if err != nil {
-		fmt.Fprintf(stderr, "cyclops: %v\n", err)
-		return exitUsage
-	}
-	err = gremlins.Execute(gremlinsArgs, stdin, stdout, stderr)
 	if err == nil {
 		return 0
 	}
-	if errors.Is(err, gremlins.ErrNotFound) {
-		fmt.Fprintln(stderr, "cyclops: gremlins was not found in PATH")
-		fmt.Fprintln(stderr, "install it with: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest")
-		return exitFailure
+	var diagnostic *backend.Diagnostic
+	if errors.As(err, &diagnostic) {
+		for _, line := range diagnostic.Lines {
+			fmt.Fprintln(stderr, line)
+		}
+		return diagnostic.ExitCode
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		return exitErr.ExitCode()
 	}
-	fmt.Fprintf(stderr, "cyclops: failed to run gremlins: %v\n", err)
+	fmt.Fprintf(stderr, "cyclops: backend %q failed: %v\n", selected.ID(), err)
 	return exitFailure
 }
 
