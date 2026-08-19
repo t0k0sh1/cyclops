@@ -42,7 +42,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 
-	err = backend.Execute(selected, backend.Request{
+	_, err = backend.Execute(selected, backend.Request{
 		Targets:  options.Targets,
 		DryRun:   options.DryRun,
 		DiffBase: options.Diff,

@@ -21,6 +21,7 @@ type Request struct {
 	Selection *target.Selection
 	DryRun    bool
 	DiffBase  string
+	Output    string
 }
 
 func Arguments(request Request) ([]string, error) {
@@ -62,6 +63,9 @@ func Arguments(request Request) ([]string, error) {
 	}
 	if request.DryRun {
 		args = append(args, "--dry-run")
+	}
+	if request.Output != "" {
+		args = append(args, "--output", request.Output)
 	}
 	return args, nil
 }

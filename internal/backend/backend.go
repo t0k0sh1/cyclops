@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	mutationresult "github.com/t0k0sh1/cyclops/internal/result"
 )
 
 const (
@@ -30,7 +32,7 @@ type Request struct {
 type Backend interface {
 	ID() string
 	Capabilities() Capabilities
-	Run(Request) error
+	Run(Request) (mutationresult.Run, error)
 }
 
 type Diagnostic struct {
@@ -51,18 +53,43 @@ func (d *Diagnostic) Error() string {
 
 func (d *Diagnostic) Unwrap() error { return d.Err }
 
-func Execute(selected Backend, request Request) error {
+func Execute(selected Backend, request Request) (mutationresult.Run, error) {
 	capabilities := selected.Capabilities()
 	if request.DiffBase != "" && !capabilities.Diff {
-		return unsupported(selected.ID(), "--diff")
+		return mutationresult.Run{}, unsupported(selected.ID(), "--diff")
 	}
 	if request.DryRun && !capabilities.DryRun {
-		return unsupported(selected.ID(), "--dry-run")
+		return mutationresult.Run{}, unsupported(selected.ID(), "--dry-run")
 	}
 	if request.List && !capabilities.ListTargets {
-		return unsupported(selected.ID(), "--list")
+		return mutationresult.Run{}, unsupported(selected.ID(), "--list")
 	}
 	return selected.Run(request)
+}
+
+func normalizedRun(id string, request Request) mutationresult.Run {
+	return mutationresult.Run{
+		Backend: mutationresult.Backend{ID: id},
+		Scope: mutationresult.Scope{
+			DiffBase: request.DiffBase,
+			Targets:  append([]string(nil), request.Targets...),
+		},
+		State:  mutationresult.StateComplete,
+		DryRun: request.DryRun,
+	}
+}
+
+func recordExecutionError(run *mutationresult.Run, kind, message string, exitCode *int) {
+	run.Errors = append(run.Errors, mutationresult.ExecutionError{
+		Kind:     kind,
+		Message:  message,
+		ExitCode: exitCode,
+	})
+	if len(run.Mutants) == 0 {
+		run.State = mutationresult.StateFailed
+	} else {
+		run.State = mutationresult.StatePartial
+	}
 }
 
 func unsupported(id, option string) error {

@@ -22,6 +22,25 @@ filters. `--dry-run` becomes `--list --json`, `--list` becomes `--list-files`,
 and `--diff REF` generates a temporary Git diff for `--in-diff`. Native
 `.cargo/mutants.toml` configuration continues to apply.
 
+### Normalized results
+
+Backend execution produces an internal normalized result containing backend
+identity and version when reported, requested targets and diff base, run state,
+summary counts, individual mutant locations, operators, and execution errors.
+The common mutant statuses are `killed`, `survived`, `uncovered`, `skipped`,
+`timed-out`, `unviable`, `runnable`, `error`, and `unknown`.
+
+Gremlins results are read from its `--output` JSON file. cargo-mutants dry-run
+candidates are read from `--list --json`, and complete runs are read from
+`outcomes.json` in a temporary output directory. The original backend JSON is
+retained alongside normalized fields so unknown or backend-specific data is not
+discarded.
+
+This model is currently internal: Cyclops continues to pass backend output
+through unchanged and preserves existing exit behavior. A public JSON format
+and the non-blocking CI reporter described in [#1](https://github.com/t0k0sh1/cyclops/issues/1)
+are intentionally deferred until the internal schema has been exercised.
+
 ## Requirements
 
 - Go 1.23 or later

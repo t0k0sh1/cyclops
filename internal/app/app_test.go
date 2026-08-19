@@ -37,7 +37,7 @@ func TestRunStartsFullGremlinsMutationTest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(gotArgs), "unleash\n"; got != want {
+	if got, want := withoutResultOutput(t, string(gotArgs)), "unleash\n"; got != want {
 		t.Fatalf("gremlins arguments = %q, want %q", got, want)
 	}
 	if got, want := stdout.String(), "gremlins stdout\n"; got != want {
@@ -87,7 +87,7 @@ func TestRunStartsGremlinsDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(gotArgs), "unleash\n--dry-run\n"; got != want {
+	if got, want := withoutResultOutput(t, string(gotArgs)), "unleash\n--dry-run\n"; got != want {
 		t.Fatalf("gremlins arguments = %q, want %q", got, want)
 	}
 }
@@ -114,7 +114,7 @@ func TestRunStartsGremlinsDiffDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(gotArgs), "unleash\n--diff\norigin/main\n--dry-run\n"; got != want {
+	if got, want := withoutResultOutput(t, string(gotArgs)), "unleash\n--diff\norigin/main\n--dry-run\n"; got != want {
 		t.Fatalf("gremlins arguments = %q, want %q", got, want)
 	}
 }
@@ -229,9 +229,26 @@ func TestRunTargetsOneGoFile(t *testing.T) {
 		"--exclude-files",
 		`^(nested/nested\.go|other\.go)$`,
 	}, "\n") + "\n"
-	if got := string(gotArgs); got != want {
+	if got := withoutResultOutput(t, string(gotArgs)); got != want {
 		t.Fatalf("gremlins arguments = %q, want %q", got, want)
 	}
+}
+
+func withoutResultOutput(t *testing.T, arguments string) string {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(arguments, "\n"), "\n")
+	for index, line := range lines {
+		if line != "--output" {
+			continue
+		}
+		if index+1 >= len(lines) || lines[index+1] == "" {
+			t.Fatalf("--output has no result path: %q", arguments)
+		}
+		lines = append(lines[:index], lines[index+2:]...)
+		return strings.Join(lines, "\n") + "\n"
+	}
+	t.Fatalf("gremlins arguments have no --output: %q", arguments)
+	return ""
 }
 
 func TestRunTargetsFilesAcrossPackages(t *testing.T) {

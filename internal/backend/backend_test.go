@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	mutationresult "github.com/t0k0sh1/cyclops/internal/result"
 )
 
 type stubBackend struct {
@@ -19,11 +21,14 @@ type stubBackend struct {
 
 func (b *stubBackend) ID() string                 { return b.id }
 func (b *stubBackend) Capabilities() Capabilities { return b.capabilities }
-func (b *stubBackend) Run(Request) error          { b.called = true; return nil }
+func (b *stubBackend) Run(Request) (mutationresult.Run, error) {
+	b.called = true
+	return mutationresult.Run{}, nil
+}
 
 func TestExecuteRejectsUnsupportedDiff(t *testing.T) {
 	selected := &stubBackend{id: "example", capabilities: Capabilities{DryRun: true}}
-	err := Execute(selected, Request{DiffBase: "origin/main"})
+	_, err := Execute(selected, Request{DiffBase: "origin/main"})
 
 	var diagnostic *Diagnostic
 	if !errors.As(err, &diagnostic) {
@@ -42,7 +47,7 @@ func TestExecuteRejectsUnsupportedDiff(t *testing.T) {
 
 func TestExecuteRejectsUnsupportedDryRun(t *testing.T) {
 	selected := &stubBackend{id: "example", capabilities: Capabilities{Diff: true}}
-	err := Execute(selected, Request{DryRun: true})
+	_, err := Execute(selected, Request{DryRun: true})
 
 	var diagnostic *Diagnostic
 	if !errors.As(err, &diagnostic) {
@@ -61,7 +66,7 @@ func TestExecuteRunsSupportedRequest(t *testing.T) {
 		id:           "example",
 		capabilities: Capabilities{Diff: true, DryRun: true},
 	}
-	if err := Execute(selected, Request{DiffBase: "HEAD~1", DryRun: true}); err != nil {
+	if _, err := Execute(selected, Request{DiffBase: "HEAD~1", DryRun: true}); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	if !selected.called {
@@ -136,7 +141,7 @@ func TestCargoMutantsArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	selected := CargoMutants{Root: root}
-	args, err := selected.arguments(Request{Targets: []string{source}, DryRun: true}, "/tmp/change.diff")
+	args, err := selected.arguments(Request{Targets: []string{source}, DryRun: true}, "/tmp/change.diff", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +153,7 @@ func TestCargoMutantsArguments(t *testing.T) {
 
 func TestCargoMutantsListArguments(t *testing.T) {
 	selected := CargoMutants{Root: t.TempDir()}
-	args, err := selected.arguments(Request{List: true}, "")
+	args, err := selected.arguments(Request{List: true}, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +164,7 @@ func TestCargoMutantsListArguments(t *testing.T) {
 
 func TestCargoMutantsMissingExecutableDiagnostic(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	err := (CargoMutants{Root: t.TempDir()}).Run(Request{
+	_, err := (CargoMutants{Root: t.TempDir()}).Run(Request{
 		Stdin:  strings.NewReader(""),
 		Stdout: &bytes.Buffer{},
 		Stderr: &bytes.Buffer{},
@@ -183,7 +188,7 @@ func TestCargoMutantsPreservesExitMeaning(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir)
-	err := (CargoMutants{Root: t.TempDir()}).Run(Request{
+	run, err := (CargoMutants{Root: t.TempDir()}).Run(Request{
 		Stdin:  strings.NewReader(""),
 		Stdout: &bytes.Buffer{},
 		Stderr: &bytes.Buffer{},
@@ -194,6 +199,9 @@ func TestCargoMutantsPreservesExitMeaning(t *testing.T) {
 	}
 	if processExit.Code != 2 || processExit.Meaning != "surviving mutants" {
 		t.Errorf("process exit = %+v", processExit)
+	}
+	if len(run.Errors) != 0 {
+		t.Errorf("surviving mutants were recorded as execution errors: %+v", run.Errors)
 	}
 }
 
@@ -234,5 +242,62 @@ func TestCargoMutantsWritesWorkingTreeDiff(t *testing.T) {
 	}
 	if !strings.Contains(string(diff), "+pub fn value() -> i32 { 2 }") {
 		t.Errorf("diff does not contain working tree version:\n%s", diff)
+	}
+}
+
+func TestGremlinsReturnsNormalizedResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses a POSIX shell script")
+	}
+	binDir := t.TempDir()
+	executable := filepath.Join(binDir, "gremlins")
+	script := `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then
+    shift
+    printf '%s' '{"files":[{"file_name":"math.go","mutations":[{"type":"ARITHMETIC_BASE","status":"KILLED","line":4,"column":11}]}]}' > "$1"
+  fi
+  shift
+done
+`
+	if err := os.WriteFile(executable, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	run, err := (Gremlins{}).Run(Request{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Backend.ID != "gremlins" || run.Summary.Killed != 1 {
+		t.Errorf("normalized run = %+v", run)
+	}
+}
+
+func TestCargoMutantsReturnsNormalizedResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses a POSIX shell script")
+	}
+	binDir := t.TempDir()
+	executable := filepath.Join(binDir, "cargo-mutants")
+	script := `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then
+    shift
+    /bin/mkdir -p "$1/mutants.out"
+    printf '%s' '{"cargo_mutants_version":"27.1.0","outcomes":[{"scenario":{"Mutant":{"name":"src/lib.rs:2:5: replace add with 0","file":"src/lib.rs","genre":"FnValue","span":{"start":{"line":2,"column":5}}}},"summary":"MissedMutant"}]}' > "$1/mutants.out/outcomes.json"
+  fi
+  shift
+done
+`
+	if err := os.WriteFile(executable, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	run, err := (CargoMutants{Root: t.TempDir()}).Run(Request{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Backend.Version != "27.1.0" || run.Summary.Survived != 1 {
+		t.Errorf("normalized run = %+v", run)
 	}
 }

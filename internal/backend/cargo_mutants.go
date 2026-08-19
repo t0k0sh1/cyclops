@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	mutationresult "github.com/t0k0sh1/cyclops/internal/result"
 )
 
 type CargoMutants struct {
@@ -20,10 +23,12 @@ func (CargoMutants) Capabilities() Capabilities {
 	return Capabilities{Diff: true, DryRun: true, ListTargets: true}
 }
 
-func (backend CargoMutants) Run(request Request) error {
+func (backend CargoMutants) Run(request Request) (mutationresult.Run, error) {
+	run := normalizedRun(backend.ID(), request)
 	path, err := exec.LookPath("cargo-mutants")
 	if err != nil {
-		return &Diagnostic{
+		recordExecutionError(&run, "tool", err.Error(), nil)
+		return run, &Diagnostic{
 			ExitCode: ExitFailure,
 			Lines: []string{
 				"cyclops: cargo-mutants was not found in PATH",
@@ -37,39 +42,79 @@ func (backend CargoMutants) Run(request Request) error {
 	if request.DiffBase != "" {
 		diffPath, err = backend.writeDiff(request.DiffBase)
 		if err != nil {
-			return usageDiagnostic(err)
+			return run, usageDiagnostic(err)
 		}
 		defer os.Remove(diffPath)
 	}
-	args, err := backend.arguments(request, diffPath)
+	var outputRoot string
+	if !request.List && !request.DryRun {
+		outputRoot, err = os.MkdirTemp("", "cyclops-cargo-mutants-*")
+		if err != nil {
+			return run, &Diagnostic{ExitCode: ExitFailure, Lines: []string{fmt.Sprintf("cyclops: create cargo-mutants result directory: %v", err)}, Err: err}
+		}
+		defer os.RemoveAll(outputRoot)
+	}
+	args, err := backend.arguments(request, diffPath, outputRoot)
 	if err != nil {
-		return usageDiagnostic(err)
+		return run, usageDiagnostic(err)
 	}
 
 	cmd := exec.Command(path, args...)
 	cmd.Dir = backend.Root
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = request.Stdin, request.Stdout, request.Stderr
-	err = cmd.Run()
-	if err == nil {
-		return nil
+	cmd.Stdin, cmd.Stderr = request.Stdin, request.Stderr
+	var candidates bytes.Buffer
+	if request.DryRun {
+		cmd.Stdout = io.MultiWriter(request.Stdout, &candidates)
+	} else {
+		cmd.Stdout = request.Stdout
+	}
+	executionErr := cmd.Run()
+	if request.DryRun && candidates.Len() > 0 {
+		if parsed, parseErr := mutationresult.ParseCargoMutants(&candidates, mutationresult.Scope{DiffBase: request.DiffBase, Targets: append([]string(nil), request.Targets...)}); parseErr == nil {
+			run = parsed
+		} else if executionErr == nil {
+			run.State = mutationresult.StatePartial
+			run.Errors = append(run.Errors, mutationresult.ExecutionError{Kind: "parse", Message: parseErr.Error()})
+		}
+	} else if outputRoot != "" {
+		if parsed, parseErr := parseCargoOutcomesFile(filepath.Join(outputRoot, "mutants.out", "outcomes.json"), request); parseErr == nil {
+			run = parsed
+		} else if executionErr == nil {
+			run.State = mutationresult.StatePartial
+			run.Errors = append(run.Errors, mutationresult.ExecutionError{Kind: "parse", Message: parseErr.Error()})
+		}
+	} else if request.List {
+		run.State = mutationresult.StateSkipped
+	}
+	if executionErr == nil {
+		return run, nil
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return &ProcessExit{
+	if errors.As(executionErr, &exitErr) {
+		code := exitErr.ExitCode()
+		if code != 2 && code != 3 {
+			kind := "tool"
+			if code == 4 {
+				kind = "test"
+			}
+			recordExecutionError(&run, kind, cargoMutantsExitMeaning(code), &code)
+		}
+		return run, &ProcessExit{
 			BackendID: backend.ID(),
-			Code:      exitErr.ExitCode(),
-			Meaning:   cargoMutantsExitMeaning(exitErr.ExitCode()),
-			Err:       err,
+			Code:      code,
+			Meaning:   cargoMutantsExitMeaning(code),
+			Err:       executionErr,
 		}
 	}
-	return &Diagnostic{
+	recordExecutionError(&run, "tool", executionErr.Error(), nil)
+	return run, &Diagnostic{
 		ExitCode: ExitFailure,
-		Lines:    []string{fmt.Sprintf("cyclops: failed to run cargo-mutants: %v", err)},
-		Err:      err,
+		Lines:    []string{fmt.Sprintf("cyclops: failed to run cargo-mutants: %v", executionErr)},
+		Err:      executionErr,
 	}
 }
 
-func (backend CargoMutants) arguments(request Request, diffPath string) ([]string, error) {
+func (backend CargoMutants) arguments(request Request, diffPath, outputRoot string) ([]string, error) {
 	args := []string{"mutants"}
 	for _, input := range request.Targets {
 		target, err := backend.targetPattern(input)
@@ -81,12 +126,27 @@ func (backend CargoMutants) arguments(request Request, diffPath string) ([]strin
 	if diffPath != "" {
 		args = append(args, "--in-diff", diffPath)
 	}
+	if outputRoot != "" {
+		args = append(args, "--output", outputRoot)
+	}
 	if request.List {
 		args = append(args, "--list-files")
 	} else if request.DryRun {
 		args = append(args, "--list", "--json")
 	}
 	return args, nil
+}
+
+func parseCargoOutcomesFile(path string, request Request) (mutationresult.Run, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return mutationresult.Run{}, err
+	}
+	defer file.Close()
+	return mutationresult.ParseCargoOutcomes(file, mutationresult.Scope{
+		DiffBase: request.DiffBase,
+		Targets:  append([]string(nil), request.Targets...),
+	})
 }
 
 func (backend CargoMutants) targetPattern(input string) (string, error) {
