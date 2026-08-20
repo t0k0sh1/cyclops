@@ -224,12 +224,6 @@ cannot overwrite newer state. If comment permission or publication fails, the
 previous comment and SHA remain unchanged, so the next run includes the
 unreported changes.
 
-GitHub normally makes `GITHUB_TOKEN` read-only for pull requests from forks, so
-repositories that accept fork contributions need to choose a project-specific
-comment authentication or trusted publishing design. That does not change the
-Cyclops invocation, report format, or incremental-state algorithm described
-here.
-
 All potentially failing analysis and comment steps use `continue-on-error`; the
 job is informational. Also ensure **Cyclops analysis** is not configured as a
 required status check in a branch protection rule or ruleset. Errors remain
