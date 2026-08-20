@@ -168,6 +168,91 @@ For cargo-mutants, Cyclops generates `git diff REF` and passes its temporary
 file to `--in-diff`. cargo-mutants exit code 2 means surviving mutants were
 found; it is preserved and is not treated as an internal execution error.
 
+## Non-blocking GitHub pull-request reports
+
+This repository contains a working, fork-safe GitHub Actions integration:
+
+- [`.github/workflows/cyclops-analyze.yml`](.github/workflows/cyclops-analyze.yml)
+  runs pull-request code with a read-only token and uploads the result.
+- [`.github/workflows/cyclops-publish.yml`](.github/workflows/cyclops-publish.yml)
+  runs after analysis, does not check out pull-request code, and uses a write
+  token only to update one persistent pull-request comment.
+
+Copy both files to the same paths in a Go repository. In the analysis workflow,
+replace the local installation command if Cyclops is not built by that
+repository:
+
+```yaml
+- name: Install Cyclops and Gremlins
+  shell: bash
+  run: |
+    set -euo pipefail
+    go install github.com/t0k0sh1/cyclops/cmd/cyclops@latest
+    go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+```
+
+No personal access token or repository secret is required. The workflows set
+their own least-privilege `GITHUB_TOKEN` permissions. Keep the repository's
+default workflow permission at **Read repository contents and packages**; the
+publisher explicitly requests only `actions: read`, `contents: read`, and
+`pull-requests: write`. The bundled GitHub-maintained Actions are pinned to full
+commit SHAs; update those pins deliberately when upgrading their noted major
+versions.
+
+### Reporting sequence
+
+On the first run, the analysis fetches the target branch and invokes:
+
+```sh
+CYCLOPS_DIFF_BASE=refs/remotes/origin/main
+cyclops --diff "$CYCLOPS_DIFF_BASE"
+```
+
+After the publisher successfully creates the report comment, that comment
+stores the analyzed head SHA in a machine-readable marker. The next run reads
+the marker and uses that SHA as `CYCLOPS_DIFF_BASE`, so only newly pushed
+changes are analyzed. The stored SHA advances only after a successful Cyclops
+run (or a successful no-candidate report) is published.
+
+If the marker is missing or malformed, the comment was deleted, or the stored
+SHA is no longer an ancestor after a rebase or force-push, analysis falls back
+to the target branch. Before invoking Cyclops, the workflow checks for added,
+copied, modified, renamed, type-changed, unmerged, or broken-pair `.go` files,
+excluding `*_test.go`. A deletion-only or otherwise empty production-code diff
+is reported as **No mutation candidates**; Gremlins is not started.
+
+Each pull request has one analysis concurrency group. A new push cancels an
+older analysis, and the publisher also compares the artifact's head SHA with
+the pull request's current head before updating the comment. A stale run
+therefore cannot overwrite newer state. Artifacts are retained for one day and
+are only transport between the two workflows; durable state lives in the
+comment. If artifact download, permission, or publication fails, the previous
+comment and SHA remain unchanged, so the next run includes the unreported
+changes.
+
+### Fork security and merge behavior
+
+Do not combine these workflows with `pull_request_target`, and do not check out
+pull-request code in `cyclops-publish.yml`. The split is deliberate: untrusted
+fork code receives only `contents: read` and `pull-requests: read`, while the
+trusted `workflow_run` publisher receives comment write permission. Public
+repository fork runs may require maintainer approval for first-time
+contributors, according to the repository's Actions settings. For private
+repositories, enable fork pull-request workflows only if needed, and do not
+enable **Send write tokens to workflows from pull requests** or **Send secrets
+to workflows from pull requests**.
+
+All potentially failing analysis and publishing steps use
+`continue-on-error`; the jobs are informational. Also ensure neither **Cyclops
+analysis** nor **Cyclops report** is configured as a required status check in a
+branch protection rule or ruleset. Errors remain visible in the persistent
+comment when an artifact can be published, and are always available in the
+Actions logs.
+
+The bundled example currently targets Go and pins Gremlins 0.6.0. For another
+backend, change the installation step and the production-file candidate check
+to match that backend before copying the workflow.
+
 ### Help and version
 
 ```sh

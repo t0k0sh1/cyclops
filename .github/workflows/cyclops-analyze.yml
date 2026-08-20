@@ -1,0 +1,168 @@
+name: Cyclops analysis
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: cyclops-analysis-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze mutations (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the pull request head
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        id: setup-go
+        if: steps.checkout.outcome == 'success'
+        continue-on-error: true
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Select the incremental comparison base
+        id: base
+        if: steps.checkout.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TARGET_REF: ${{ github.event.pull_request.base.ref }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="refs/remotes/origin/${TARGET_REF}"
+          git fetch --no-tags origin "+refs/heads/${TARGET_REF}:${target}"
+
+          marker='<!-- cyclops-report:v1 -->'
+          stored="$({
+            gh api --paginate "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              --jq ".[] | select(.body | contains(\"${marker}\")) | .body"
+          } | sed -n 's/^<!-- cyclops-state: \([0-9a-f]\{40\}\) -->$/\1/p' | tail -n 1)"
+
+          mode=initial
+          diff_base="$target"
+          previous_head=""
+          if [[ "$stored" =~ ^[0-9a-f]{40}$ ]] && git merge-base --is-ancestor "$stored" HEAD; then
+            mode=incremental
+            diff_base="$stored"
+            previous_head="$stored"
+          elif [[ -n "$stored" ]]; then
+            mode=fallback
+          fi
+
+          {
+            printf 'diff_base=%s\n' "$diff_base"
+            printf 'mode=%s\n' "$mode"
+            printf 'previous_head=%s\n' "$previous_head"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install Cyclops and Gremlins
+        id: install
+        if: steps.setup-go.outcome == 'success' && steps.base.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install ./cmd/cyclops
+          go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+
+      - name: Run Cyclops without blocking the pull request
+        id: cyclops
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        env:
+          CYCLOPS_DIFF_BASE: ${{ steps.base.outputs.diff_base }}
+        shell: bash
+        run: |
+          set -u
+          mapfile -t candidates < <(
+            git diff --name-only --diff-filter=ACMRTUXB "$CYCLOPS_DIFF_BASE" -- '*.go' \
+              | awk '!/_test\.go$/'
+          )
+          if (( ${#candidates[@]} == 0 )); then
+            printf 'No changed Go production files; Cyclops was not invoked.\n' > cyclops.log
+            printf 'result=no-candidates\n' >> "$GITHUB_OUTPUT"
+            printf 'exit_code=0\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          set +e
+          cyclops --diff "$CYCLOPS_DIFF_BASE" > cyclops.log 2>&1
+          code=$?
+          set -e
+          printf 'exit_code=%s\n' "$code" >> "$GITHUB_OUTPUT"
+          if (( code == 0 )); then
+            printf 'result=complete\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'result=error\n' >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Build the untrusted analysis artifact
+        if: always()
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MODE: ${{ steps.base.outputs.mode }}
+          DIFF_BASE: ${{ steps.base.outputs.diff_base }}
+          PREVIOUS_HEAD: ${{ steps.base.outputs.previous_head }}
+          CYCLOPS_RESULT: ${{ steps.cyclops.outputs.result }}
+          CYCLOPS_EXIT: ${{ steps.cyclops.outputs.exit_code }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SETUP_OUTCOME: ${{ steps.setup-go.outcome }}
+          BASE_OUTCOME: ${{ steps.base.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+        shell: bash
+        run: |
+          result="$CYCLOPS_RESULT"
+          exit_code="${CYCLOPS_EXIT:-1}"
+          if [[ -z "$result" ]]; then
+            result=error
+            printf 'Cyclops preparation failed (checkout=%s, setup=%s, base=%s, install=%s).\n' \
+              "$CHECKOUT_OUTCOME" "$SETUP_OUTCOME" "$BASE_OUTCOME" "$INSTALL_OUTCOME" > cyclops.log
+          fi
+          jq -n \
+            --argjson pr "$PR_NUMBER" \
+            --argjson run_id "$RUN_ID" \
+            --arg head "$HEAD_SHA" \
+            --arg mode "${MODE:-initial}" \
+            --arg diff_base "${DIFF_BASE:-unknown}" \
+            --arg previous_head "$PREVIOUS_HEAD" \
+            --arg result "$result" \
+            --argjson exit_code "$exit_code" \
+            --arg run_url "$RUN_URL" \
+            '{version: 1, pr: $pr, run_id: $run_id, head: $head, mode: $mode,
+              diff_base: $diff_base, previous_head: $previous_head, result: $result,
+              exit_code: $exit_code, run_url: $run_url}' > report.json
+
+      - name: Upload the report for the privileged publisher
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cyclops-report
+          path: |
+            report.json
+            cyclops.log
+          if-no-files-found: warn
+          retention-days: 1
