@@ -154,6 +154,36 @@ func TestConfiguredBackendResolvesAmbiguousProject(t *testing.T) {
 
 func TestSelectRejectsUnknownConfiguredBackend(t *testing.T) {
 	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "cyclops.yaml"), []byte("backend: unknown\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Select(root)
+	var diagnostic *Diagnostic
+	if !errors.As(err, &diagnostic) {
+		t.Fatalf("Select() error = %v, want Diagnostic", err)
+	}
+	if !strings.Contains(diagnostic.Error(), `unknown backend "unknown"`) {
+		t.Errorf("Select() error = %q", diagnostic.Error())
+	}
+}
+
+func TestSelectsStrykerFromPackageDependency(t *testing.T) {
+	root := t.TempDir()
+	manifest := `{"devDependencies":{"@stryker-mutator/core":"^9.0.0"}}`
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := Select(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := selected.ID(), "stryker-js"; got != want {
+		t.Errorf("selected backend = %q, want %q", got, want)
+	}
+}
+
+func TestConfiguredStrykerRequiresNodeProject(t *testing.T) {
+	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "cyclops.yaml"), []byte("backend: stryker-js\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -162,8 +192,215 @@ func TestSelectRejectsUnknownConfiguredBackend(t *testing.T) {
 	if !errors.As(err, &diagnostic) {
 		t.Fatalf("Select() error = %v, want Diagnostic", err)
 	}
-	if !strings.Contains(diagnostic.Error(), `unknown backend "stryker-js"`) {
+	if !strings.Contains(diagnostic.Error(), "requires a package.json") {
 		t.Errorf("Select() error = %q", diagnostic.Error())
+	}
+}
+
+func TestStrykerArgumentsAndNormalizedResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses a POSIX shell script")
+	}
+	root := t.TempDir()
+	binDir := filepath.Join(root, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argsFile := filepath.Join(t.TempDir(), "args")
+	executable := filepath.Join(binDir, "stryker")
+	script := `#!/bin/sh
+printf '%s\n' "$@" > "$CYCLOPS_TEST_ARGS_FILE"
+while [ "$#" -gt 0 ]; do
+	  case "$1" in
+	    *.mjs)
+	      report_path=$(sed -n 's#^// cyclops-report: ##p' "$1")
+	      printf '%s' '{"schemaVersion":"2.0","files":{"src/math.ts":{"mutants":[{"id":"1","mutatorName":"ArithmeticOperator","status":"Survived","location":{"start":{"line":2,"column":3},"end":{"line":2,"column":4}}}]}}}' > "$report_path"
+	      ;;
+	  esac
+	  shift
+done
+`
+	if err := os.WriteFile(executable, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "src", "math.ts")
+	if err := os.Mkdir(filepath.Dir(source), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("export const value = 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CYCLOPS_TEST_ARGS_FILE", argsFile)
+	run, err := (StrykerJS{Root: root}).Run(Request{Targets: []string{source}, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Summary.Survived != 1 {
+		t.Fatalf("normalized run = %+v", run)
+	}
+	arguments, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(arguments); !strings.Contains(got, "--mutate\nsrc/math.ts\n") || !strings.Contains(got, "--reporters\njson\n") {
+		t.Errorf("StrykerJS arguments = %q", got)
+	}
+}
+
+func TestStrykerDiffRanges(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	runGit("init")
+	source := filepath.Join(root, "src", "math.ts")
+	if err := os.Mkdir(filepath.Dir(source), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "src/math.ts")
+	runGit("-c", "user.name=Cyclops Test", "-c", "user.email=cyclops@example.invalid", "commit", "-m", "initial")
+	if err := os.WriteFile(source, []byte("one\nchanged\nthree\nadded\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ranges, err := (StrykerJS{Root: root}).diffRanges("HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(ranges, ","), "src/math.ts:2-2,src/math.ts:4-4"; got != want {
+		t.Errorf("diff ranges = %q, want %q", got, want)
+	}
+}
+
+func TestSelectsPITFromMavenConfiguration(t *testing.T) {
+	root := t.TempDir()
+	pom := `<project><build><plugins><plugin><groupId>org.pitest</groupId><artifactId>pitest-maven</artifactId></plugin></plugins></build></project>`
+	if err := os.WriteFile(filepath.Join(root, "pom.xml"), []byte(pom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := Select(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := selected.ID(), "pit"; got != want {
+		t.Errorf("selected backend = %q, want %q", got, want)
+	}
+}
+
+func TestPITArgumentsAndNormalizedResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses a POSIX shell script")
+	}
+	root := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "args")
+	executable := filepath.Join(root, "mvnw")
+	script := `#!/bin/sh
+printf '%s\n' "$@" > "$CYCLOPS_TEST_ARGS_FILE"
+for arg in "$@"; do
+  case "$arg" in
+    -DreportsDirectory=*)
+      report_dir="${arg#-DreportsDirectory=}"
+      mkdir -p "$report_dir"
+      printf '%s' '<mutations><mutation detected="false" status="SURVIVED"><sourceFile>Math.java</sourceFile><mutatedClass>com.example.Math</mutatedClass><lineNumber>4</lineNumber><mutator>MathMutator</mutator></mutation></mutations>' > "$report_dir/mutations.xml"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(executable, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "src", "main", "java", "com", "example", "Math.java")
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("package com.example;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CYCLOPS_TEST_ARGS_FILE", argsFile)
+	run, err := (PIT{Root: root}).Run(Request{Targets: []string{source}, DryRun: true, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Summary.Survived != 1 || !run.DryRun {
+		t.Fatalf("normalized run = %+v", run)
+	}
+	arguments, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"-DtargetClasses=com.example.Math*", "-Dpit.dryRun=true", "org.pitest:pitest-maven:mutationCoverage"} {
+		if !strings.Contains(string(arguments), expected+"\n") {
+			t.Errorf("PIT arguments do not contain %q: %q", expected, arguments)
+		}
+	}
+}
+
+func TestSelectsMutmutFromPyproject(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "pyproject.toml"), []byte("[tool.mutmut]\nsource_paths = [\"src/\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := Select(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := selected.ID(), "mutmut"; got != want {
+		t.Errorf("selected backend = %q, want %q", got, want)
+	}
+}
+
+func TestMutmutArgumentsAndNormalizedResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mutmut requires fork support")
+	}
+	root := t.TempDir()
+	binDir := filepath.Join(root, ".venv", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argsFile := filepath.Join(t.TempDir(), "args")
+	executable := filepath.Join(binDir, "mutmut")
+	script := `#!/bin/sh
+printf '%s\n' "$@" >> "$CYCLOPS_TEST_ARGS_FILE"
+if [ "$1" = "export-cicd-stats" ]; then
+  mkdir -p mutants
+  printf '%s' '{"killed":3,"survived":1,"total":5,"no_tests":1,"skipped":0,"suspicious":0,"timeout":0,"check_was_interrupted_by_user":0,"segfault":0}' > mutants/mutmut-cicd-stats.json
+fi
+`
+	if err := os.WriteFile(executable, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "src", "example", "math.py")
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("def add(a, b): return a + b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CYCLOPS_TEST_ARGS_FILE", argsFile)
+	run, err := (Mutmut{Root: root}).Run(Request{Targets: []string{source}, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Summary.Killed != 3 || run.Summary.Survived != 1 || run.Summary.Uncovered != 1 {
+		t.Fatalf("normalized run = %+v", run)
+	}
+	arguments, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(arguments); !strings.Contains(got, "run\nexample.math*\n") || !strings.Contains(got, "export-cicd-stats\n") {
+		t.Errorf("mutmut arguments = %q", got)
 	}
 }
 

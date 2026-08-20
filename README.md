@@ -6,16 +6,24 @@ on selected files, glob patterns, or Git changes.
 Cyclops accepts files to include and translates that selection into the native
 filters supported by the selected backend.
 
+Supported project languages currently include Go, Rust, JavaScript/TypeScript,
+Java through Maven, and Python.
+
 ## Backends
 
 Cyclops selects a backend from project files in or above the current directory:
 
 - `go.mod`: [Gremlins](https://gremlins.dev/)
 - `Cargo.toml`: [cargo-mutants](https://mutants.rs/)
+- a Stryker configuration file or `@stryker-mutator/core` dependency in
+  `package.json`: [StrykerJS](https://stryker-mutator.io/)
+- a `pom.xml` configured with `org.pitest`: [PIT](https://pitest.org/)
+- a `[tool.mutmut]` section in `pyproject.toml` or `[mutmut]` in `setup.cfg`:
+  [mutmut](https://mutmut.readthedocs.io/)
 
-A directory tree containing both markers is ambiguous and rejected. When no
-recognized marker exists, Cyclops preserves its original behavior and uses
-Gremlins.
+A directory tree containing markers for multiple backends is ambiguous and
+rejected. When no recognized marker exists, Cyclops preserves its original
+behavior and uses Gremlins.
 
 To select a backend explicitly, create `cyclops.yaml` in the project directory:
 
@@ -26,9 +34,31 @@ backend: cargo-mutants
 Cyclops searches the current directory and its ancestors for the nearest
 `cyclops.yaml`. An explicit selection takes precedence over project-file
 detection, so it can resolve an otherwise ambiguous project. The supported
-values are `gremlins` and `cargo-mutants`. Unknown fields and backend names are
-rejected. Backend-specific settings remain in each mutation engine's native
-configuration file rather than `cyclops.yaml`.
+values are `gremlins`, `cargo-mutants`, `stryker-js`, `pit`, and `mutmut`.
+Unknown fields and backend names are rejected. Backend-specific settings remain
+in each mutation engine's native configuration file rather than `cyclops.yaml`.
+
+StrykerJS projects use the project-local `node_modules/.bin/stryker` before a
+global executable. Cyclops translates `--diff REF` into Stryker mutation ranges
+such as `src/math.ts:10-14` and writes a JSON report for normalized results.
+Stryker's `dryRunOnly` performs an initial test run rather than listing mutant
+candidates, so the StrykerJS backend reports `--dry-run` and `--list` as
+unsupported instead of giving them different semantics.
+
+PIT support currently uses its Maven plugin. Cyclops prefers `./mvnw`, falls
+back to `mvn`, requests an XML report, and normalizes PIT mutation statuses.
+Java targets below `src/main/java` are converted to PIT class globs. Because PIT
+does not provide a native changed-line filter, `--diff REF` mutates the complete
+classes whose Java source files changed. PIT dry-run mode generates mutants and
+coverage without testing each mutant, so it maps to Cyclops `--dry-run`.
+
+mutmut support prefers `.venv/bin/mutmut`, then `venv/bin/mutmut`, and finally
+`mutmut` from `PATH`. Cyclops runs mutation testing and then uses
+`mutmut export-cicd-stats` for normalized aggregate counts. Current mutmut does
+not export stable per-mutant locations, so backend-specific aggregate JSON is
+preserved without inventing individual mutant records. `--diff REF` maps
+changed Python files to mutmut module patterns. mutmut has no candidate-only
+mode equivalent to Cyclops `--dry-run`, and does not support `--list`.
 
 For Rust projects, Cyclops maps target files to repeated cargo-mutants `--file`
 filters. `--dry-run` becomes `--list --json`, `--list` becomes `--list-files`,
@@ -58,7 +88,7 @@ are intentionally deferred until the internal schema has been exercised.
 
 - Go 1.23 or later
 - Git, when using `--diff`
-- Gremlins available in `PATH` for Go projects, or cargo-mutants for Rust projects
+- the selected mutation engine and its language/build runtime
 
 Install Gremlins:
 
@@ -70,6 +100,19 @@ Install cargo-mutants:
 
 ```sh
 cargo install --locked cargo-mutants
+```
+
+Install StrykerJS in its project:
+
+```sh
+npm install --save-dev @stryker-mutator/core
+```
+
+PIT projects need Maven or `./mvnw` and the `pitest-maven` plugin. Install
+mutmut in the Python project's virtual environment:
+
+```sh
+python -m pip install mutmut
 ```
 
 ## Installation
@@ -101,8 +144,8 @@ cyclops --version
 
 ## Usage
 
-Run Cyclops from a Go module or Cargo project. With no arguments, it performs a
-full mutation test with the detected backend:
+Run Cyclops from a supported project. With no arguments, it performs a full
+mutation test with the detected backend:
 
 ```sh
 cd /path/to/project
@@ -111,16 +154,19 @@ cyclops
 
 ### Select files
 
-Pass one or more Go or Rust source files to mutate only those files:
+Pass one or more supported source files to mutate only those files:
 
 ```sh
 cyclops internal/service/user.go
 cyclops internal/service/user.go internal/service/order.go
 cyclops src/lib.rs
+cyclops src/math.ts
+cyclops src/main/java/com/example/Math.java
+cyclops src/example/math.py
 ```
 
 Go targets must belong to the same Go module; directly specified `*_test.go`
-files are rejected. Rust targets must be inside the detected Cargo project.
+files are rejected. Other targets must be inside their detected project.
 
 ### Select files with patterns
 
@@ -133,9 +179,10 @@ cyclops 'internal/**/service_?.go'
 cyclops 'pkg/[a-z]*.go'
 ```
 
-Patterns support `*`, `**`, `?`, character classes such as `[a-z]`, and
-alternatives such as `{bar,bas}`. Test files matched by a pattern are ignored.
-A pattern that matches no Go source files is an error.
+Pattern syntax and expansion are backend-specific. Go supports `*`, `**`, `?`,
+character classes, and brace alternatives. StrykerJS receives its native mutate
+patterns, and PIT translates Java paths to class globs. mutmut currently accepts
+explicit Python files because its CLI filters mutant names rather than paths.
 
 ### List selected files
 
@@ -148,6 +195,9 @@ cyclops --list 'foo/{bar,bas}/**/*.go'
 
 Without file or pattern arguments, `--list` shows the source files the selected
 backend considers for mutation.
+
+`--list` is currently supported by Gremlins and cargo-mutants. Other backends
+return an unsupported-capability diagnostic.
 
 ### Preview mutants
 
