@@ -131,6 +131,57 @@ func TestSelectRejectsAmbiguousProject(t *testing.T) {
 	}
 }
 
+func TestConfiguredBackendResolvesAmbiguousProject(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"go.mod":       "module example.com/project\n",
+		"Cargo.toml":   "[package]\nname = \"project\"\n",
+		"cyclops.yaml": "backend: cargo-mutants\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selected, err := Select(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := selected.ID(), "cargo-mutants"; got != want {
+		t.Errorf("selected backend = %q, want %q", got, want)
+	}
+}
+
+func TestSelectRejectsUnknownConfiguredBackend(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "cyclops.yaml"), []byte("backend: stryker-js\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Select(root)
+	var diagnostic *Diagnostic
+	if !errors.As(err, &diagnostic) {
+		t.Fatalf("Select() error = %v, want Diagnostic", err)
+	}
+	if !strings.Contains(diagnostic.Error(), `unknown backend "stryker-js"`) {
+		t.Errorf("Select() error = %q", diagnostic.Error())
+	}
+}
+
+func TestConfiguredCargoMutantsRequiresCargoProject(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "cyclops.yaml"), []byte("backend: cargo-mutants\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Select(root)
+	var diagnostic *Diagnostic
+	if !errors.As(err, &diagnostic) {
+		t.Fatalf("Select() error = %v, want Diagnostic", err)
+	}
+	if !strings.Contains(diagnostic.Error(), "requires a Cargo.toml") {
+		t.Errorf("Select() error = %q", diagnostic.Error())
+	}
+}
+
 func TestCargoMutantsArguments(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "src", "lib.rs")

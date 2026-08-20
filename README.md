@@ -17,6 +17,19 @@ A directory tree containing both markers is ambiguous and rejected. When no
 recognized marker exists, Cyclops preserves its original behavior and uses
 Gremlins.
 
+To select a backend explicitly, create `cyclops.yaml` in the project directory:
+
+```yaml
+backend: cargo-mutants
+```
+
+Cyclops searches the current directory and its ancestors for the nearest
+`cyclops.yaml`. An explicit selection takes precedence over project-file
+detection, so it can resolve an otherwise ambiguous project. The supported
+values are `gremlins` and `cargo-mutants`. Unknown fields and backend names are
+rejected. Backend-specific settings remain in each mutation engine's native
+configuration file rather than `cyclops.yaml`.
+
 For Rust projects, Cyclops maps target files to repeated cargo-mutants `--file`
 filters. `--dry-run` becomes `--list --json`, `--list` becomes `--list-files`,
 and `--diff REF` generates a temporary Git diff for `--in-diff`. Native
