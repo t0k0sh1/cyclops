@@ -11,6 +11,7 @@ const Version = "0.1.0"
 type Options struct {
 	List, DryRun, Help, Version bool
 	Diff                        string
+	ListTestTargets             string
 	Targets                     []string
 }
 
@@ -24,6 +25,27 @@ func Parse(args []string) (Options, error) {
 			continue
 		}
 		if parseOptions {
+			if strings.HasPrefix(arg, "--list-test-targets=") {
+				if parsed.ListTestTargets != "" {
+					return Options{}, fmt.Errorf("--list-test-targets may only be specified once")
+				}
+				parsed.ListTestTargets = strings.TrimPrefix(arg, "--list-test-targets=")
+				if parsed.ListTestTargets == "" {
+					return Options{}, fmt.Errorf("--list-test-targets requires a branch or commit")
+				}
+				continue
+			}
+			if arg == "--list-test-targets" {
+				if parsed.ListTestTargets != "" {
+					return Options{}, fmt.Errorf("--list-test-targets may only be specified once")
+				}
+				if index+1 >= len(args) || strings.HasPrefix(args[index+1], "--") {
+					return Options{}, fmt.Errorf("--list-test-targets requires a branch or commit")
+				}
+				index++
+				parsed.ListTestTargets = args[index]
+				continue
+			}
 			if arg == "--diff" {
 				if parsed.Diff != "" {
 					return Options{}, fmt.Errorf("--diff may only be specified once")
@@ -74,10 +96,13 @@ func Parse(args []string) (Options, error) {
 	if parsed.List && parsed.Diff != "" {
 		return Options{}, fmt.Errorf("--list and --diff cannot be used together")
 	}
-	if parsed.Help && (parsed.Version || parsed.List || parsed.DryRun || parsed.Diff != "" || len(parsed.Targets) > 0) {
+	if parsed.ListTestTargets != "" && (parsed.List || parsed.DryRun || parsed.Diff != "" || len(parsed.Targets) > 0) {
+		return Options{}, fmt.Errorf("--list-test-targets cannot be combined with other options or targets")
+	}
+	if parsed.Help && (parsed.Version || parsed.List || parsed.DryRun || parsed.Diff != "" || parsed.ListTestTargets != "" || len(parsed.Targets) > 0) {
 		return Options{}, fmt.Errorf("--help cannot be combined with other options or targets")
 	}
-	if parsed.Version && (parsed.List || parsed.DryRun || parsed.Diff != "" || len(parsed.Targets) > 0) {
+	if parsed.Version && (parsed.List || parsed.DryRun || parsed.Diff != "" || parsed.ListTestTargets != "" || len(parsed.Targets) > 0) {
 		return Options{}, fmt.Errorf("--version cannot be combined with other options or targets")
 	}
 	return parsed, nil
@@ -94,6 +119,8 @@ Options:
   --dry-run  Analyze mutant candidates without testing them
   --help     Show this help
   --list     List the selected source files without running Gremlins
+  --list-test-targets REF
+             List production files in packages whose tests changed from REF
   --version  Show the Cyclops version
 
 Examples:
@@ -102,6 +129,7 @@ Examples:
   cyclops 'internal/**/*.go'
   cyclops --diff origin/main
   cyclops --dry-run --diff HEAD~1
+  cyclops --list-test-targets HEAD~1
   cyclops --list 'foo/{bar,bas}/**/*.go'
   cyclops --dry-run 'internal/**/*.go'
 `)

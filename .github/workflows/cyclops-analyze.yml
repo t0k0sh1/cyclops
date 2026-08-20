@@ -93,27 +93,67 @@ jobs:
         shell: bash
         run: |
           set -u
-          mapfile -t candidates < <(
+          mapfile -t production_changes < <(
             git diff --name-only --diff-filter=ACMRTUXB "$CYCLOPS_DIFF_BASE" -- '*.go' \
               | awk '!/_test\.go$/'
           )
-          if (( ${#candidates[@]} == 0 )); then
+          mapfile -t test_changes < <(
+            git diff --name-only "$CYCLOPS_DIFF_BASE" -- '*_test.go'
+          )
+
+          if (( ${#production_changes[@]} > 0 )); then
+            set +e
+            cyclops --diff "$CYCLOPS_DIFF_BASE" > cyclops.log 2>&1
+            code=$?
+            set -e
+            printf 'scope=production diff\n' >> "$GITHUB_OUTPUT"
+            printf '%s\n' "${production_changes[@]}" > scope.txt
+          elif (( ${#test_changes[@]} > 0 )); then
+            if ! cyclops --list-test-targets "$CYCLOPS_DIFF_BASE" > test-targets.txt 2> cyclops.log; then
+              {
+                printf 'result=error\n'
+                printf 'exit_code=1\n'
+                printf 'scope=test changes (mapping failed)\n'
+              } >> "$GITHUB_OUTPUT"
+              printf '%s\n' "${test_changes[@]}" > scope.txt
+              exit 0
+            fi
+            mapfile -t test_targets < test-targets.txt
+            if (( ${#test_targets[@]} == 0 )); then
+              printf 'Changed tests did not resolve to any buildable production Go files; Cyclops was not invoked.\n' > cyclops.log
+              {
+                printf 'result=no-candidates\n'
+                printf 'exit_code=0\n'
+                printf 'scope=test changes (no production mapping)\n'
+              } >> "$GITHUB_OUTPUT"
+              printf '%s\n' "${test_changes[@]}" > scope.txt
+              exit 0
+            fi
+            set +e
+            cyclops "${test_targets[@]}" > cyclops.log 2>&1
+            code=$?
+            set -e
+            printf 'scope=test-affected packages\n' >> "$GITHUB_OUTPUT"
+            printf '%s\n' "${test_targets[@]}" > scope.txt
+          else
             printf 'No changed Go production files; Cyclops was not invoked.\n' > cyclops.log
-            printf 'result=no-candidates\n' >> "$GITHUB_OUTPUT"
-            printf 'exit_code=0\n' >> "$GITHUB_OUTPUT"
+            {
+              printf 'result=no-candidates\n'
+              printf 'exit_code=0\n'
+              printf 'scope=no relevant Go changes\n'
+            } >> "$GITHUB_OUTPUT"
+            : > scope.txt
             exit 0
           fi
 
-          set +e
-          cyclops --diff "$CYCLOPS_DIFF_BASE" > cyclops.log 2>&1
-          code=$?
-          set -e
-          printf 'exit_code=%s\n' "$code" >> "$GITHUB_OUTPUT"
-          if (( code == 0 )); then
-            printf 'result=complete\n' >> "$GITHUB_OUTPUT"
-          else
-            printf 'result=error\n' >> "$GITHUB_OUTPUT"
-          fi
+          {
+            printf 'exit_code=%s\n' "$code"
+            if (( code == 0 )); then
+              printf 'result=complete\n'
+            else
+              printf 'result=error\n'
+            fi
+          } >> "$GITHUB_OUTPUT"
           exit 0
 
       - name: Build the pull-request report
@@ -128,6 +168,7 @@ jobs:
           PREVIOUS_HEAD: ${{ steps.base.outputs.previous_head }}
           CYCLOPS_RESULT: ${{ steps.cyclops.outputs.result }}
           CYCLOPS_EXIT: ${{ steps.cyclops.outputs.exit_code }}
+          CYCLOPS_SCOPE: ${{ steps.cyclops.outputs.scope }}
           CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
           SETUP_OUTCOME: ${{ steps.setup-go.outcome }}
           BASE_OUTCOME: ${{ steps.base.outcome }}
@@ -140,6 +181,7 @@ jobs:
             result=error
             printf 'Cyclops preparation failed (checkout=%s, setup=%s, base=%s, install=%s).\n' \
               "$CHECKOUT_OUTCOME" "$SETUP_OUTCOME" "$BASE_OUTCOME" "$INSTALL_OUTCOME" > cyclops.log
+            : > scope.txt
           fi
           jq -n \
             --argjson pr "$PR_NUMBER" \
@@ -149,10 +191,13 @@ jobs:
             --arg diff_base "${DIFF_BASE:-unknown}" \
             --arg previous_head "$PREVIOUS_HEAD" \
             --arg result "$result" \
+            --arg scope_kind "${CYCLOPS_SCOPE:-unavailable}" \
+            --rawfile scope_targets scope.txt \
             --argjson exit_code "$exit_code" \
             --arg run_url "$RUN_URL" \
             '{version: 1, pr: $pr, run_id: $run_id, head: $head, mode: $mode,
               diff_base: $diff_base, previous_head: $previous_head, result: $result,
+              scope_kind: $scope_kind, scope_targets: ($scope_targets | split("\n") | map(select(length > 0))),
               exit_code: $exit_code, run_url: $run_url}' > report.json
 
       - name: Create or update the persistent pull-request comment
@@ -198,6 +243,12 @@ jobs:
               'no-candidates': 'No mutation candidates',
               error: `Execution/reporting error (exit ${report.exit_code})`,
             }[report.result];
+            const escape = value => String(value)
+              .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+              .replaceAll('`', '&#96;');
+            const scope = Array.isArray(report.scope_targets) && report.scope_targets.length > 0
+              ? report.scope_targets.map(target => `\`${escape(target)}\``).join('<br>')
+              : 'None';
 
             const body = `${marker}
             ${stateMarker}
@@ -209,6 +260,8 @@ jobs:
             | --- | --- |
             | Result | ${resultLabel} |
             | Mode | ${report.mode} |
+            | Mutation scope | ${report.scope_kind} |
+            | Production targets | ${scope} |
             | Comparison base | \`${short(report.diff_base)}\` |
             | Analyzed head | \`${short(report.head)}\` |
             | Full logs | [GitHub Actions run](${report.run_url}) |

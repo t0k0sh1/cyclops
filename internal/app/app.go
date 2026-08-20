@@ -6,6 +6,7 @@ import (
 	"io"
 	"os/exec"
 
+	"github.com/t0k0sh1/cyclops/internal/affected"
 	"github.com/t0k0sh1/cyclops/internal/backend"
 	"github.com/t0k0sh1/cyclops/internal/cli"
 )
@@ -27,6 +28,17 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if options.Version {
 		fmt.Fprintf(stdout, "cyclops %s\n", cli.Version)
+		return 0
+	}
+	if options.ListTestTargets != "" {
+		targets, err := affected.TestTargets(".", options.ListTestTargets)
+		if err != nil {
+			fmt.Fprintf(stderr, "cyclops: list test-affected targets: %v\n", err)
+			return exitFailure
+		}
+		for _, target := range targets {
+			fmt.Fprintln(stdout, target)
+		}
 		return 0
 	}
 	selected, err := backend.Select(".")

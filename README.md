@@ -164,6 +164,17 @@ Gremlins 0.6.0 treats an empty Git diff as an unfiltered run. Check that the
 requested diff is non-empty before running Cyclops if an unexpected full run
 would be costly.
 
+List the production files in packages whose tests changed from a reference:
+
+```sh
+cyclops --list-test-targets origin/main
+```
+
+This command does not run mutation testing. It uses the Git diff to find
+changed `*_test.go` files, then uses `go list` in each affected directory to
+list the package's buildable non-test Go files. An empty mapping prints nothing
+and never falls back to the whole repository.
+
 For cargo-mutants, Cyclops generates `git diff REF` and passes its temporary
 file to `--in-diff`. cargo-mutants exit code 2 means surviving mutants were
 found; it is preserved and is not treated as an internal execution error.
@@ -216,6 +227,28 @@ to the target branch. Before invoking Cyclops, the workflow checks for added,
 copied, modified, renamed, type-changed, unmerged, or broken-pair `.go` files,
 excluding `*_test.go`. A deletion-only or otherwise empty production-code diff
 is reported as **No mutation candidates**; Gremlins is not started.
+
+When an incremental push changes only `*_test.go` files, the workflow runs
+`cyclops --list-test-targets "$CYCLOPS_DIFF_BASE"` and mutation-tests the
+returned production files explicitly. All buildable production files in each
+changed test's package are selected; this is a conservative package-level
+mapping, not a claim that every selected file is covered by the changed test.
+The PR comment labels the run as `test-affected packages` and lists the chosen
+production targets.
+
+Package-level mapping is deliberate. Go does not expose a stable static
+test-to-production dependency map, and coverage-based selection would require
+executing and reliably isolating the changed tests before choosing mutants. It
+can also miss setup-dependent paths that the changed tests are intended to
+exercise. Package membership handles table-driven tests, shared helpers, and
+external test packages deterministically while keeping the mutation scope
+bounded.
+
+When production and test files change together, the production diff remains
+authoritative and Cyclops uses `--diff` as before. Deleted test directories,
+packages with no buildable production files, and empty mappings are reported as
+no candidates instead of triggering an unfiltered run. Build tags and the
+runner's Go environment affect which files `go list` considers buildable.
 
 Each pull request has one analysis concurrency group. A new push cancels an
 older analysis, and the comment step compares the analyzed head SHA with the
