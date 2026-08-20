@@ -123,6 +123,76 @@ func TestChangedTestDirectoriesIncludesBothSidesOfRename(t *testing.T) {
 	}
 }
 
+func TestTestTargetsMapsRustIntegrationTestToPackageSources(t *testing.T) {
+	requireCargo(t)
+	repository := newRepository(t, map[string]string{
+		"Cargo.toml":   "[package]\nname = \"example\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+		"src/lib.rs":   "pub mod value;\n",
+		"src/value.rs": "pub fn value() -> usize { 1 }\n",
+		"tests/api.rs": "#[test]\nfn api() {}\n",
+	})
+	base := commitAll(t, repository, "base")
+	writeFile(t, repository, "tests/api.rs", "#[test]\nfn api() { assert!(true); }\n")
+
+	targets, err := TestTargets(repository, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"src/lib.rs", "src/value.rs"}
+	if !reflect.DeepEqual(targets, want) {
+		t.Fatalf("TestTargets() = %v, want %v", targets, want)
+	}
+}
+
+func TestTestTargetsMapsCustomCargoTestTarget(t *testing.T) {
+	requireCargo(t)
+	repository := newRepository(t, map[string]string{
+		"Cargo.toml":    "[package]\nname = \"example\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[test]]\nname = \"check\"\npath = \"spec/check.rs\"\n",
+		"src/lib.rs":    "pub fn value() -> usize { 1 }\n",
+		"spec/check.rs": "#[test]\nfn check() {}\n",
+	})
+	base := commitAll(t, repository, "base")
+	writeFile(t, repository, "spec/check.rs", "#[test]\nfn check() { assert!(true); }\n")
+
+	targets, err := TestTargets(repository, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"src/lib.rs"}; !reflect.DeepEqual(targets, want) {
+		t.Fatalf("TestTargets() = %v, want %v", targets, want)
+	}
+}
+
+func TestTestTargetsLimitsRustWorkspaceTestToOwningPackage(t *testing.T) {
+	requireCargo(t)
+	repository := newRepository(t, map[string]string{
+		"Cargo.toml":               "[workspace]\nmembers = [\"alpha\", \"beta\"]\nresolver = \"2\"\n",
+		"alpha/Cargo.toml":         "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+		"alpha/src/lib.rs":         "pub fn alpha() {}\n",
+		"alpha/tests/alpha.rs":     "#[test]\nfn alpha() {}\n",
+		"beta/Cargo.toml":          "[package]\nname = \"beta\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+		"beta/src/lib.rs":          "pub fn beta() {}\n",
+		"beta/src/nested/value.rs": "pub fn value() {}\n",
+	})
+	base := commitAll(t, repository, "base")
+	writeFile(t, repository, "alpha/tests/alpha.rs", "#[test]\nfn alpha() { assert!(true); }\n")
+
+	targets, err := TestTargets(repository, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"alpha/src/lib.rs"}; !reflect.DeepEqual(targets, want) {
+		t.Fatalf("TestTargets() = %v, want %v", targets, want)
+	}
+}
+
+func requireCargo(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("cargo"); err != nil {
+		t.Skip("cargo is not installed")
+	}
+}
+
 func newRepository(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
