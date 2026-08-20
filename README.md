@@ -233,10 +233,13 @@ List the production files in packages whose tests changed from a reference:
 cyclops --list-test-targets origin/main
 ```
 
-This command does not run mutation testing. It uses the Git diff to find
-changed `*_test.go` files, then uses `go list` in each affected directory to
-list the package's buildable non-test Go files. An empty mapping prints nothing
-and never falls back to the whole repository.
+This command does not run mutation testing. For Go, it finds changed
+`*_test.go` files and uses `go list` in each affected directory to list the
+package's buildable non-test Go files. For Rust, it finds changed integration
+tests under a package's `tests/` directory and explicit `[[test]]` targets,
+uses `cargo metadata` to identify the owning package, and lists that package's
+`src/**/*.rs` files. Workspace packages are mapped independently. An empty
+mapping prints nothing and never falls back to the whole repository.
 
 For cargo-mutants, Cyclops generates `git diff REF` and passes its temporary
 file to `--in-diff`. cargo-mutants exit code 2 means surviving mutants were
@@ -250,17 +253,23 @@ This repository contains a working GitHub Actions integration:
   analyzes each pull request and creates or updates one persistent comment with
   the Cyclops result for reviewers.
 
-Copy the workflow to the same path in a Go repository. In the workflow,
-replace the local installation command if Cyclops is not built by that
-repository:
+Copy the workflow to the same path in a Go or Rust repository. In the workflow,
+replace the local Cyclops installation because Cyclops is not built by that
+repository. Install the mutation engine selected by the repository marker:
 
 ```yaml
-- name: Install Cyclops and Gremlins
+- name: Install Cyclops and mutation engine
   shell: bash
   run: |
     set -euo pipefail
     go install github.com/t0k0sh1/cyclops/cmd/cyclops@latest
-    GOTOOLCHAIN=auto go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+    if [[ -f Cargo.toml ]]; then
+      cargo install --locked cargo-mutants
+    elif [[ -f go.mod ]]; then
+      GOTOOLCHAIN=auto go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+    else
+      exit 1
+    fi
 ```
 
 No personal access token or repository secret is required. The workflow sets
@@ -287,25 +296,34 @@ a successful no-candidate report) is published.
 If the marker is missing or malformed, the comment was deleted, or the stored
 SHA is no longer an ancestor after a rebase or force-push, analysis falls back
 to the target branch. Before invoking Cyclops, the workflow checks for added,
-copied, modified, renamed, type-changed, unmerged, or broken-pair `.go` files,
-excluding `*_test.go`. A deletion-only or otherwise empty production-code diff
-is reported as **No mutation candidates**; Gremlins is not started.
+copied, modified, renamed, type-changed, unmerged, or broken-pair Go production
+files or Rust files under `src/`. A deletion-only or otherwise empty
+production-code diff is reported as **No mutation candidates**; the mutation
+engine is not started.
 
-When an incremental push changes only `*_test.go` files, the workflow runs
+When an incremental push changes only Go test files or Rust files outside
+`src/`, the workflow runs
 `cyclops --list-test-targets "$CYCLOPS_DIFF_BASE"` and mutation-tests the
-returned production files explicitly. All buildable production files in each
-changed test's package are selected; this is a conservative package-level
-mapping, not a claim that every selected file is covered by the changed test.
-The PR comment labels the run as `test-affected packages` and lists the chosen
-production targets.
+returned production files explicitly. For Go, all buildable production files
+in each changed test's package are selected. For Rust integration or custom
+test targets, all `.rs` files below the owning Cargo package's `src/` directory
+are selected. This is a conservative package-level mapping, not a claim that
+every selected file is covered by the changed test. The PR comment labels the
+run as `test-affected packages` and lists the chosen production targets.
 
-Package-level mapping is deliberate. Go does not expose a stable static
-test-to-production dependency map, and coverage-based selection would require
-executing and reliably isolating the changed tests before choosing mutants. It
-can also miss setup-dependent paths that the changed tests are intended to
-exercise. Package membership handles table-driven tests, shared helpers, and
-external test packages deterministically while keeping the mutation scope
-bounded.
+Package-level mapping is deliberate. Neither Go nor Cargo exposes a stable
+static test-to-production dependency map, and coverage-based selection would
+require executing and reliably isolating the changed tests before choosing
+mutants. It can also miss setup-dependent paths that the changed tests are
+intended to exercise. Package membership keeps the mutation scope bounded and
+deterministic.
+
+Rust unit tests embedded in `src/**/*.rs` with `#[cfg(test)]` are treated as
+production-file changes, so Cyclops uses the ordinary line diff for that file.
+Precisely separating an edited inline test from production Rust would require
+syntax-aware range analysis; filename and Cargo metadata alone cannot do it
+reliably. Rust files outside `src/` that are neither conventional integration
+tests nor explicit `[[test]]` targets produce an empty test mapping.
 
 When production and test files change together, the production diff remains
 authoritative and Cyclops uses `--diff` as before. Deleted test directories,
@@ -326,9 +344,9 @@ required status check in a branch protection rule or ruleset. Errors remain
 visible in the persistent comment when it can be published, and are always
 available in the Actions logs.
 
-The bundled example currently targets Go and pins Gremlins 0.6.0. For another
-backend, change the installation step and the production-file candidate check
-to match that backend before copying the workflow.
+The bundled workflow supports Go repositories with Gremlins 0.6.0 and Cargo
+repositories with cargo-mutants. It expects `go.mod` or `Cargo.toml` at the
+repository root.
 
 ### Help and version
 
