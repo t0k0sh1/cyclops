@@ -168,6 +168,72 @@ For cargo-mutants, Cyclops generates `git diff REF` and passes its temporary
 file to `--in-diff`. cargo-mutants exit code 2 means surviving mutants were
 found; it is preserved and is not treated as an internal execution error.
 
+## Non-blocking GitHub pull-request reports
+
+This repository contains a working GitHub Actions integration:
+
+- [`.github/workflows/cyclops-analyze.yml`](.github/workflows/cyclops-analyze.yml)
+  analyzes each pull request and creates or updates one persistent comment with
+  the Cyclops result for reviewers.
+
+Copy the workflow to the same path in a Go repository. In the workflow,
+replace the local installation command if Cyclops is not built by that
+repository:
+
+```yaml
+- name: Install Cyclops and Gremlins
+  shell: bash
+  run: |
+    set -euo pipefail
+    go install github.com/t0k0sh1/cyclops/cmd/cyclops@latest
+    GOTOOLCHAIN=auto go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+```
+
+No personal access token or repository secret is required. The workflow sets
+its own `GITHUB_TOKEN` permissions: `contents: read` to check out and analyze
+the code, and `pull-requests: write` to read and update the report comment. The
+bundled GitHub-maintained Actions are pinned to full commit SHAs; update those
+pins deliberately when upgrading their noted major versions.
+
+### Reporting sequence
+
+On the first run, the analysis fetches the target branch and invokes:
+
+```sh
+CYCLOPS_DIFF_BASE=refs/remotes/origin/main
+cyclops --diff "$CYCLOPS_DIFF_BASE"
+```
+
+After the workflow successfully creates the report comment, that comment stores
+the analyzed head SHA in a machine-readable marker. The next run reads the
+marker and uses that SHA as `CYCLOPS_DIFF_BASE`, so only newly pushed changes
+are analyzed. The stored SHA advances only after a successful Cyclops run (or
+a successful no-candidate report) is published.
+
+If the marker is missing or malformed, the comment was deleted, or the stored
+SHA is no longer an ancestor after a rebase or force-push, analysis falls back
+to the target branch. Before invoking Cyclops, the workflow checks for added,
+copied, modified, renamed, type-changed, unmerged, or broken-pair `.go` files,
+excluding `*_test.go`. A deletion-only or otherwise empty production-code diff
+is reported as **No mutation candidates**; Gremlins is not started.
+
+Each pull request has one analysis concurrency group. A new push cancels an
+older analysis, and the comment step compares the analyzed head SHA with the
+pull request's current head before updating the comment. A stale run therefore
+cannot overwrite newer state. If comment permission or publication fails, the
+previous comment and SHA remain unchanged, so the next run includes the
+unreported changes.
+
+All potentially failing analysis and comment steps use `continue-on-error`; the
+job is informational. Also ensure **Cyclops analysis** is not configured as a
+required status check in a branch protection rule or ruleset. Errors remain
+visible in the persistent comment when it can be published, and are always
+available in the Actions logs.
+
+The bundled example currently targets Go and pins Gremlins 0.6.0. For another
+backend, change the installation step and the production-file candidate check
+to match that backend before copying the workflow.
+
 ### Help and version
 
 ```sh
