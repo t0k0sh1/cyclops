@@ -188,7 +188,7 @@ repository:
   run: |
     set -euo pipefail
     go install github.com/t0k0sh1/cyclops/cmd/cyclops@latest
-    go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+    GOTOOLCHAIN=auto go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
 ```
 
 No personal access token or repository secret is required. The workflows set
